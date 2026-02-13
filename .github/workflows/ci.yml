@@ -1,0 +1,126 @@
+name: Pipeline CI/CD Complet - Fondation Experimentale
+
+on: 
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main" ]
+
+# Points de décision globaux (DP-001, DP-008, DP-011) [cite: 204, 253, 272]
+jobs:
+  # STAGE 1: Build [cite: 94]
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - [cite_start]uses: actions/checkout@v4 [cite: 98]
+      
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          [cite_start]java-version: '21' # Adapté à votre projet (le PDF suggérait 17 [cite: 101])
+          distribution: 'temurin'
+          cache: maven
+
+      - [cite_start]name: DP-007 Build with Maven [cite: 101, 246]
+        run: |
+          echo "Decision Point: DP-007 - Dependency Resolution"
+          mvn clean compile
+          
+      - [cite_start]name: Save build metrics [cite: 102]
+        run: |
+          echo "build_status=${{ job.status }}" >> build_metrics.txt
+          
+      - [cite_start]name: Upload classes artifact [cite: 104]
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-classes
+          [cite_start]path: target/classes/ [cite: 106]
+
+  # STAGE 2: Tests Unitaires [cite: 107]
+  unit-tests:
+    [cite_start]needs: build [cite: 108]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          
+      - [cite_start]name: DP-004 Run unit tests [cite: 112, 224]
+        run: |
+          echo "Decision Point: DP-004 - Unit Test Execution & Retry Policy"
+          mvn test [cite: 113]
+          
+      - [cite_start]name: Publish test results [cite: 114]
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        [cite_start]if: always() [cite: 116]
+        with:
+          [cite_start]files: target/surefire-reports/*.xml [cite: 118]
+
+  # STAGE 3: Analyse Statique [cite: 123]
+  static-analysis:
+    [cite_start]needs: build [cite: 125]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - [cite_start]name: DP-005 & DP-006 Quality Checks [cite: 231, 238]
+        run: |
+          echo "Decision Point: DP-005 (Checkstyle) & DP-006 (SpotBugs)"
+          mvn checkstyle:check spotbugs:check pmd:check [cite: 130, 132, 134]
+
+  # STAGE 4: Tests d'Intégration 
+  integration-tests:
+    [cite_start]needs: unit-tests [cite: 137]
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: petclinic
+          MYSQL_DATABASE: petclinic
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+    steps:
+      - uses: actions/checkout@v4
+      - [cite_start]name: Run integration tests [cite: 141]
+        run: |
+          mvn verify -Pmysql -Dspring.datasource.url=jdbc:mysql://localhost:3306/petclinic [cite: 142]
+
+  # STAGE 5: Couverture de Code [cite: 143]
+  code-coverage:
+    [cite_start]needs: unit-tests [cite: 145]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - [cite_start]name: DP-003 Coverage Threshold [cite: 151, 217]
+        run: |
+          mvn jacoco:prepare-agent test jacoco:report [cite: 149, 150]
+          echo "Decision Point: DP-003 - Coverage Threshold Check (80%)" [cite: 290]
+          # Le script d'échec si < 80% doit être ajouté ici selon l'étape 3.2 [cite: 282]
+
+  # STAGE 6: Packaging [cite: 155]
+  package:
+    [cite_start]needs: [unit-tests, integration-tests, static-analysis, code-coverage] [cite: 157]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - [cite_start]name: Build Docker image [cite: 164]
+        run: |
+          mvn package -DskipTests [cite: 163]
+          docker build -t petclinic:${{ github.sha }} . [cite: 165]
+
+  # STAGE 7: Déploiement (Mock) [cite: 168]
+  deploy:
+    [cite_start]needs: package [cite: 170]
+    runs-on: ubuntu-latest
+    [cite_start]if: github.ref == 'refs/heads/main' [cite: 172, 211]
+    steps:
+      - [cite_start]name: DP-002 Execution du Deploiement [cite: 210]
+        run: |
+          echo "Decision Point: DP-002 - Branch Condition for Deployment"
+          echo "Deploying to staging environment..." [cite: 176]
+          sleep 5 [cite: 177]
+          echo "Deployment successful" [cite: 178]
