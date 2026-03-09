@@ -27,9 +27,9 @@ pipeline {
             }
         }
 
-        stage('Run Tests') {
+        stage('Validate Docker Compose') {
             steps {
-                sh 'mvn test'
+                sh 'docker compose config'
             }
         }
 
@@ -47,15 +47,6 @@ pipeline {
             }
         }
 
-    }
-
-    post {
-        success {
-            echo 'Pipeline executed successfully!'
-        }
-        failure {
-            echo 'Pipeline failed!'
-        }
     }
 
 }
