@@ -8,17 +8,17 @@ pipeline {
     }
 
     environment {
-        APP_NAME = "petclinic-app"
         DOCKER_IMAGE = "petclinic-app:latest"
     }
 
     stages {
-        
-stage('Check Java') {
-    steps {
-        sh 'java -version'
-    }
-}
+
+        stage('Check Java') {
+            steps {
+                sh 'java -version'
+            }
+        }
+
         stage('Clone Repository') {
             steps {
                 git branch: 'main', url: 'https://github.com/MBANAA/PetClinic-ci.git'
@@ -43,15 +43,21 @@ stage('Check Java') {
             }
         }
 
-        stage('Stop Old Container') {
+        stage('Stop Old Containers') {
             steps {
-                sh 'docker rm -f petclinic-container || true'
+                sh 'docker compose down || true'
             }
         }
 
-        stage('Run Docker Container') {
+        stage('Run Application with Docker Compose') {
             steps {
-                sh 'docker run -d -p 8080:8080 --name petclinic-container $DOCKER_IMAGE'
+                sh 'docker compose up -d'
+            }
+        }
+
+        stage('Test Application') {
+            steps {
+                sh 'curl http://localhost:8080 || true'
             }
         }
 
@@ -68,5 +74,4 @@ stage('Check Java') {
         }
 
     }
-
 }
