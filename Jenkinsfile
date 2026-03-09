@@ -7,10 +7,6 @@ pipeline {
         jdk 'JDK17'
     }
 
-    environment {
-        DOCKER_IMAGE = "petclinic-app:latest"
-    }
-
     stages {
 
         stage('Check Java') {
@@ -37,41 +33,29 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
-            steps {
-                sh 'docker build -t $DOCKER_IMAGE .'
-            }
-        }
-
-        stage('Stop Old Containers') {
+        stage('Run Docker Compose') {
             steps {
                 sh 'docker compose down || true'
+                sh 'docker compose up -d --build'
             }
         }
 
-        stage('Run Application with Docker Compose') {
+        stage('Check Application') {
             steps {
-                sh 'docker compose up -d'
-            }
-        }
-
-        stage('Test Application') {
-            steps {
-                sh 'curl http://localhost:8080 || true'
+                sh 'sleep 20'
+                sh 'curl http://localhost:8080'
             }
         }
 
     }
 
     post {
-
         success {
             echo 'Pipeline executed successfully!'
         }
-
         failure {
             echo 'Pipeline failed!'
         }
-
     }
+
 }
