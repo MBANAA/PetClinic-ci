@@ -13,7 +13,12 @@ pipeline {
     }
 
     stages {
-
+        
+stage('Check Java') {
+    steps {
+        sh 'java -version'
+    }
+}
         stage('Clone Repository') {
             steps {
                 git branch: 'main', url: 'https://github.com/MBANAA/PetClinic-ci.git'
