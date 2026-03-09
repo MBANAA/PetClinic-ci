@@ -29,14 +29,14 @@ pipeline {
 
         stage('Validate Docker Compose') {
             steps {
-                sh 'docker compose config'
+                sh 'docker-compose config'
             }
         }
 
         stage('Run Docker Compose') {
             steps {
-                sh 'docker compose down || true'
-                sh 'docker compose up -d --build'
+                sh 'docker-compose down || true'
+                sh 'docker-compose up -d --build'
             }
         }
 
