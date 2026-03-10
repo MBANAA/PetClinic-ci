@@ -7,111 +7,94 @@ pipeline {
     }
 
     environment {
-        // Fichiers requis pour la Phase 1 du doctorat
-        LOG_FILE = 'decision.log'
-        METRICS_FILE = 'pipeline_history.csv'
+        DECISION_LOG = 'pipeline_decisions.log'
+        METRICS_CSV = 'dataset_metrics.csv'
     }
 
     stages {
-        stage('Initialisation & Clean') {
-            steps {
-                sh 'java -version'
-                // Nettoyage complet pour repartir sur une base saine
-                sh 'mvn clean'
-                sh 'docker compose down -v || true'
-                sh "echo '--- Build No: ${BUILD_NUMBER} Started ---' > ${LOG_FILE}"
-            }
-        }
-
-        stage('Clone Repository') {
+        stage('0. Checkout & Init') {
             steps {
                 git branch: 'main', url: 'https://github.com/MBANAA/PetClinic-ci.git'
+                sh "echo '--- RUN ${BUILD_NUMBER} ---' > ${DECISION_LOG}"
             }
         }
 
-        stage('Compilation') {
+        stage('1. Build (Compilation)') {
             steps {
+                // Compile le code source (src/main/java) sans lancer les tests
                 sh 'mvn clean compile'
-                sh "echo 'DP-001: Compilation terminée avec succès' >> ${LOG_FILE}"
+                sh "echo 'DP-007,BUILD,PASS,CONTINUE' >> ${DECISION_LOG}"
             }
         }
 
-        stage('Unit Tests (Stabilized)') {
+        // --- NOUVEAU STAGE : VÉRIFICATION QUALITÉ ET FICHIERS CRITIQUES ---
+        stage('2. Quality & Critical Files Check') {
             steps {
                 script {
-                    try {
-                        // SOLUTION : 
-                        // 1. Profil H2 pour l'isolation.
-                        // 2. Exclusion des tests d'intégration (!*IntegrationTests) pour éviter les erreurs 500 Docker.
-                        sh 'mvn test -Dspring.profiles.active=h2 -Dtest=!*IntegrationTests'
-                        sh "echo 'DP-004: Tests unitaires réussis (Isolation H2)' >> ${LOG_FILE}"
-                    } catch (Exception e) {
-                        sh "echo 'DP-004: Échec des tests unitaires' >> ${LOG_FILE}"
-                        currentBuild.result = 'FAILURE'
-                        error "Build stoppé à cause des tests."
-                    }
-                }
-            }
-            post {
-                always {
-                    junit '**/target/surefire-reports/*.xml'
-                }
-            }
-        }
-
-        stage('Static Analysis') {
-            steps {
-                // Analyse Checkstyle (Phase 1.3 - Qualité du code)
-                sh 'mvn checkstyle:check || true'
-                sh "echo 'DP-005: Analyse statique effectuée' >> ${LOG_FILE}"
-            }
-        }
-
-        stage('Package JAR') {
-            steps {
-                sh 'mvn package -DskipTests'
-                sh "echo 'DP-008: Artefact JAR généré' >> ${LOG_FILE}"
-            }
-        }
-
-        stage('Docker Deployment') {
-            steps {
-                // Lancement de l'application réelle via Docker Compose
-                sh 'docker compose up -d --build'
-                sh "echo 'DP-009: Déploiement Docker effectué' >> ${LOG_FILE}"
-            }
-        }
-
-        stage('Final Healthcheck') {
-            steps {
-                script {
-                    sh 'sleep 30' // Temps d'attente pour le démarrage des services
-                    def response = sh(script: "curl -s http://localhost:8080", returnStatus: true)
-                    if (response == 0) {
-                        sh "echo 'DP-002: Application opérationnelle (UP)' >> ${LOG_FILE}"
+                    echo "Vérification des fichiers de configuration..."
+                    
+                    // 1. Vérification que le pom.xml est bien formé (pas de balise cassée)
+                    sh 'mvn validate'
+                    
+                    // 2. Analyse Statique du code (Checkstyle & Spotbugs)
+                    // Cela génère des échecs de qualité pour ton dataset
+                    sh 'mvn checkstyle:check spotbugs:check || true'
+                    
+                    // 3. Scan de sécurité rudimentaire sur le application.properties
+                    // On vérifie qu'aucun mot de passe en clair n'est laissé dans les configs
+                    def configCheck = sh(script: "grep -i 'password=root' src/main/resources/application.properties", returnStatus: true)
+                    if (configCheck == 0) {
+                        sh "echo 'DP-006,SECURITY_CHECK,WARNING,HARDCODED_PASSWORD' >> ${DECISION_LOG}"
+                        echo "ATTENTION: Mot de passe en clair détecté !"
                     } else {
-                        sh "echo 'DP-002: Échec du Healthcheck' >> ${LOG_FILE}"
-                        // On ne bloque pas forcément ici pour garder les logs du build
+                        sh "echo 'DP-006,SECURITY_CHECK,PASS,CONTINUE' >> ${DECISION_LOG}"
                     }
                 }
+            }
+        }
+
+        stage('3. Unit Testing') {
+            steps {
+                // Exécute les tests dans src/test/java, mais ignore les tests d'intégration lourds
+                sh 'mvn test -Dspring.profiles.active=h2 -Dtest=!*IntegrationTests'
+                sh "echo 'DP-004,UNIT_TESTS,PASS,CONTINUE' >> ${DECISION_LOG}"
+            }
+            post { always { junit '**/target/surefire-reports/*.xml' } }
+        }
+
+        stage('4. Integration Testing (Testcontainers)') {
+            steps {
+                // Exécute uniquement les tests d'intégration (qui démarrent une vraie base via Testcontainers)
+                sh 'mvn test -Dtest=*IntegrationTests'
+                sh "echo 'DP-011,INTEGRATION_TESTS,PASS,CONTINUE' >> ${DECISION_LOG}"
+            }
+        }
+
+        stage('5. Code Coverage (JaCoCo)') {
+            steps {
+                // Vérifie quel pourcentage du code est couvert par les tests (DP-003)
+                sh 'mvn jacoco:report'
+                sh "echo 'DP-003,COVERAGE,GENERATED,CONTINUE' >> ${DECISION_LOG}"
+            }
+        }
+
+        stage('6. Package & Docker Image') {
+            steps {
+                // Crée le fichier .jar final et l'image Docker
+                sh 'mvn package -DskipTests'
+                sh 'docker build -t petclinic:latest .'
+                sh "echo 'DP-009,PACKAGE,PASS,CONTINUE' >> ${DECISION_LOG}"
             }
         }
     }
 
-    // SECTION CRUCIALE : COLLECTE DE DONNÉES POUR LA THÈSE
+    // --- INSTRUMENTATION ET COLLECTE (OBLIGATOIRE PHASE 1) ---
     post {
         always {
             script {
                 def status = currentBuild.result ?: 'SUCCESS'
-                def timestamp = new Date().format("yyyy-MM-dd'T'HH:mm:ss")
-                
-                // 1. Mise à jour du dataset (CSV) pour l'IA future
-                sh "echo '${timestamp},${BUILD_NUMBER},${status}' >> ${METRICS_FILE}"
-                
-                // 2. Archivage des preuves (Logs de décision et résultats de tests)
-                archiveArtifacts artifacts: "${LOG_FILE}, ${METRICS_FILE}, target/*.jar", allowEmptyArchive: true
-                
-                echo "Phase 1 - Données collectées pour le build ${BUILD_NUMBER}"
+                sh "echo '${BUILD_NUMBER},${status},${currentBuild.duration}' >> ${METRICS_CSV}"
+                archiveArtifacts artifacts: "${DECISION_LOG}, ${METRICS_CSV}, target/*.jar", allowEmptyArchive: true
             }
         }
     }
