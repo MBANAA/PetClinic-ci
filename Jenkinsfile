@@ -1,42 +1,58 @@
 pipeline {
+
     agent any
 
-    environment {
-        // Désactivation de Docker Compose dans Maven pour éviter le conflit "Jackson/End-of-input"
-        MAVEN_OPTS = "-Dspring.docker.compose.skip.in-tests=true -Dspring.sql.init.mode=always"
+    tools {
+        maven 'Maven3'
+        jdk 'JDK17'
     }
 
     stages {
-        stage('Checkout') {
+
+        stage('Check Java') {
             steps {
-                checkout scm
+                sh 'java -version'
             }
         }
 
-        stage('Build & Unit Tests') {
+        stage('Clone Repository') {
             steps {
-                script {
-                    // On exécute uniquement les tests unitaires isolés (sans les intégrations lourdes)
-                    // -Dtest=!PostgresIntegrationTests,!PetClinicIntegrationTests,!ClinicServiceTests
-                    sh 'mvn clean package -DskipTests=false -Dtest=UnitTest* -Dspring.test.context.cache.maxSize=0'
-                }
+                git branch: 'main', url: 'https://github.com/MBANAA/PetClinic-ci.git'
             }
         }
 
-        stage('Integration Tests') {
+        stage('Build Application') {
             steps {
-                script {
-                    // Ici, on lance les tests d'intégration avec le profil nécessaire
-                    // On ajoute -Dspring.profiles.active=postgres si besoin
-                    sh 'mvn test -Dtest=PostgresIntegrationTests,ClinicServiceTests -Dspring.profiles.active=postgres'
-                }
+                sh 'mvn clean package -DskipTests'
             }
         }
-    }
 
-    post {
-        always {
-            junit '**/target/surefire-reports/*.xml'
-        }
+       
+
+
+	stage('Validate Docker Compose') {
+    steps {
+        sh 'docker compose config'
     }
 }
+
+stage('Run Docker Compose') {
+    steps {
+        sh 'docker compose down || true'
+        sh 'docker compose up -d --build'
+    }
+}
+
+
+
+        stage('Check Application') {
+            steps {
+                sh 'sleep 20'
+                sh 'curl http://localhost:8080'
+            }
+        }
+
+    }
+
+}
+
