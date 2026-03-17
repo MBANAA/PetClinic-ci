@@ -2,68 +2,83 @@ pipeline {
     agent any
 
     tools {
-        maven 'Maven3' // Assure-toi que le nom correspond à ta config Jenkins
-        jdk 'JDK17'   // Assure-toi que le nom correspond à ta config Jenkins
+        maven 'maven' 
+        jdk 'jdk17'
     }
 
     environment {
-        // On évite que Spring ne tente de gérer Docker pendant le build Maven
         MAVEN_OPTS = "-Dspring.docker.compose.skip.in-tests=true"
     }
 
     stages {
-        stage('Check Environment') {
+        // STAGE 1: Initialisation de l'environnement
+        stage('1. Environment Setup') {
             steps {
                 sh 'java -version'
                 sh 'mvn -version'
-                // On vérifie quelle version de docker compose est disponible
                 script {
-                    try {
-                        sh 'docker compose version'
-                        env.DOCKER_CMD = "docker compose"
-                    } catch (Exception e) {
-                        sh 'docker-compose version'
-                        env.DOCKER_CMD = "docker-compose"
-                    }
+                    try { sh 'docker compose version'; env.DOCKER_CMD = "docker compose" }
+                    catch (Exception e) { env.DOCKER_CMD = "docker-compose" }
                 }
             }
         }
 
-        stage('Build Application') {
+        // STAGE 2: Récupération du code
+        stage('2. Checkout Source') {
             steps {
-                // On compile et on saute les tests ici pour valider l'infrastructure d'abord
-                sh 'mvn clean package -DskipTests'
+                checkout scm
             }
         }
 
-        stage('Run Infrastructure') {
+        // STAGE 3: Compilation du code source
+        stage('3. Compile') {
+            steps {
+                sh 'mvn clean compile'
+            }
+        }
+
+        // STAGE 4: Exécution des tests unitaires
+        stage('4. Unit Tests') {
+            steps {
+                // On utilise H2 ici pour la rapidité et l'isolation
+                sh 'mvn test -Dtest=!*IntegrationTests -Dspring.sql.init.mode=always'
+            }
+            post {
+                always { junit '**/target/surefire-reports/*.xml' }
+            }
+        }
+
+        // STAGE 5: Construction de l'artefact (JAR)
+        stage('5. Package') {
+            steps {
+                sh 'mvn package -DskipTests'
+            }
+        }
+
+        // STAGE 6: Déploiement de l'infrastructure Docker
+        stage('6. Docker Deployment') {
             steps {
                 script {
-                    // Arrêt des anciens conteneurs et démarrage des nouveaux
-                    sh "${env.DOCKER_CMD} down"
-                    sh "${env.DOCKER_CMD} up -d"
+                    sh "${env.DOCKER_CMD} down --remove-orphans"
+                    sh "${env.DOCKER_CMD} up -d --build"
                 }
             }
         }
 
-        stage('Healthcheck') {
+        // STAGE 7: Vérification de la disponibilité (Smoke Test)
+        stage('7. Healthcheck') {
             steps {
                 script {
-                    echo "Attente du démarrage de l'application..."
-                    // On attend que l'app réponde sur le port 8080
-                    sleep 20
-                    sh "curl -f http://localhost:8080 || exit 1"
+                    echo "Waiting for PetClinic to be ready..."
+                    sleep 30
+                    sh "curl -sI http://localhost:8080 | grep 'HTTP/1.1 200' || (echo 'App not responding' && exit 1)"
                 }
             }
         }
     }
 
     post {
-        always {
-            echo "Nettoyage ou archivage des résultats..."
-        }
-        failure {
-            echo "Le pipeline a échoué. Vérifiez si Docker est bien installé sur le serveur Jenkins."
-        }
+        success { echo "Pipeline complet terminé avec succès (7/7 stages)." }
+        failure { echo "Échec au cours du pipeline. Vérifiez le stage concerné." }
     }
 }
