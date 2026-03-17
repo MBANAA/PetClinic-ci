@@ -7,15 +7,13 @@ pipeline {
     }
 
     environment {
+        // Empêche Docker Compose de démarrer pendant 'mvn test'
         MAVEN_OPTS = "-Dspring.docker.compose.skip.in-tests=true"
     }
 
     stages {
-        // STAGE 1: Initialisation de l'environnement
         stage('1. Environment Setup') {
             steps {
-                sh 'java -version'
-                sh 'mvn -version'
                 script {
                     try { sh 'docker compose version'; env.DOCKER_CMD = "docker compose" }
                     catch (Exception e) { env.DOCKER_CMD = "docker-compose" }
@@ -23,39 +21,28 @@ pipeline {
             }
         }
 
-        // STAGE 2: Récupération du code
         stage('2. Checkout Source') {
-            steps {
-                checkout scm
-            }
+            steps { checkout scm }
         }
 
-        // STAGE 3: Compilation du code source
         stage('3. Compile') {
-            steps {
-                sh 'mvn clean compile'
-            }
+            steps { sh 'mvn clean compile' }
         }
 
-        // STAGE 4: Exécution des tests unitaires
         stage('4. Unit Tests') {
             steps {
-                // On utilise H2 ici pour la rapidité et l'isolation
-                sh 'mvn test -Dtest=!*IntegrationTests -Dspring.sql.init.mode=always'
+                // On force le mode d'initialisation SQL directement en ligne de commande
+                sh 'mvn test -Dtest=!*IntegrationTests -Dspring.sql.init.mode=always -Dspring.jpa.defer-datasource-initialization=true'
             }
             post {
                 always { junit '**/target/surefire-reports/*.xml' }
             }
         }
 
-        // STAGE 5: Construction de l'artefact (JAR)
         stage('5. Package') {
-            steps {
-                sh 'mvn package -DskipTests'
-            }
+            steps { sh 'mvn package -DskipTests' }
         }
 
-        // STAGE 6: Déploiement de l'infrastructure Docker
         stage('6. Docker Deployment') {
             steps {
                 script {
@@ -65,20 +52,14 @@ pipeline {
             }
         }
 
-        // STAGE 7: Vérification de la disponibilité (Smoke Test)
         stage('7. Healthcheck') {
             steps {
                 script {
-                    echo "Waiting for PetClinic to be ready..."
+                    echo "Waiting for app to start..."
                     sleep 30
-                    sh "curl -sI http://localhost:8080 | grep 'HTTP/1.1 200' || (echo 'App not responding' && exit 1)"
+                    sh "curl -sI http://localhost:8080 | grep 'HTTP/1.1 200' || exit 1"
                 }
             }
         }
-    }
-
-    post {
-        success { echo "Pipeline complet terminé avec succès (7/7 stages)." }
-        failure { echo "Échec au cours du pipeline. Vérifiez le stage concerné." }
     }
 }
