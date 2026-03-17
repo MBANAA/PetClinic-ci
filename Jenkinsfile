@@ -6,17 +6,19 @@ pipeline {
         jdk 'jdk17'
     }
 
-    environment {
-        // ARGS DE TEST :
-        // 1. Force l'initialisation SQL
-        // 2. Reporte l'init après la création des tables par Hibernate
-        // 3. Désactive le Docker Compose interne qui fait échouer PostgresIntegrationTests
-        TEST_OPTS = "-Dspring.sql.init.mode=always -Dspring.jpa.defer-datasource-initialization=true -Dspring.docker.compose.skip.in-tests=true"
-        
-        // EXCLUSIONS :
-        // On exclut les tests qui plantent sur la traduction (UI) et ceux qui demandent un Postgres réel
-        EXCLUSIONS = "-Dtest=!PostgresIntegrationTests,!CrashControllerIntegrationTests,!PetControllerTests"
-    }
+environment {
+    // 1. On force le mode d'initialisation à "ALWAYS"
+    // 2. On dit à Spring d'attendre que Hibernate ait fini de créer les tables (defer)
+    // 3. On ignore les tests qui demandent une UI parfaite (problème de traduction)
+    // 4. On ignore les tests Postgres s'ils font toujours du bruit
+    TEST_OPTS = """
+        -Dspring.sql.init.mode=always 
+        -Dspring.jpa.defer-datasource-initialization=true 
+        -Dspring.docker.compose.skip.in-tests=true
+    """
+    
+    EXCLUSIONS = "-Dtest=!PostgresIntegrationTests,!CrashControllerIntegrationTests"
+}
 
     stages {
         stage('Checkout') {
