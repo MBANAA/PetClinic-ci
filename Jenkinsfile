@@ -2,51 +2,75 @@ pipeline {
     agent any
 
     tools {
+        // Remplace 'maven' et 'jdk17' par les noms EXACTS configurés dans ton Jenkins
         maven 'maven' 
         jdk 'jdk17'
     }
 
-environment {
-    // 1. On force le mode d'initialisation à "ALWAYS"
-    // 2. On dit à Spring d'attendre que Hibernate ait fini de créer les tables (defer)
-    // 3. On ignore les tests qui demandent une UI parfaite (problème de traduction)
-    // 4. On ignore les tests Postgres s'ils font toujours du bruit
-    TEST_OPTS = """
-        -Dspring.sql.init.mode=always 
-        -Dspring.jpa.defer-datasource-initialization=true 
-        -Dspring.docker.compose.skip.in-tests=true
-    """
-    
-    EXCLUSIONS = "-Dtest=!PostgresIntegrationTests,!CrashControllerIntegrationTests"
-}
+    environment {
+        // Empêche Spring de tenter de piloter Docker pendant que Maven compile
+        MAVEN_OPTS = "-Dspring.docker.compose.skip.in-tests=true"
+        // Nom de l'image Docker pour ton projet
+        IMAGE_NAME = "petclinic-app"
+    }
 
     stages {
-        stage('Checkout') {
+        stage('Nettoyage & Préparation') {
             steps {
-                checkout scm
-            }
-        }
-
-        stage('Test & Build') {
-            steps {
-                // On combine les options et les exclusions
-                sh "mvn clean install ${env.TEST_OPTS} ${env.EXCLUSIONS}"
-            }
-            post {
-                always {
-                    junit '**/target/surefire-reports/*.xml'
+                sh 'mvn clean'
+                script {
+                    // Détection dynamique de la commande Docker Compose (V1 vs V2)
+                    try {
+                        sh 'docker compose version'
+                        env.DOCKER_CMD = "docker compose"
+                    } catch (Exception e) {
+                        env.DOCKER_CMD = "docker-compose"
+                    }
                 }
             }
         }
 
-        stage('Docker Deploy') {
+        stage('Build & Tests Unitaires') {
+            steps {
+                // On lance les tests qui ne nécessitent pas de base de données externe
+                // On force le chargement des données SQL pour H2
+                sh 'mvn package -Dspring.sql.init.mode=always -Dtest=!PostgresIntegrationTests,!MySqlIntegrationTests'
+            }
+        }
+
+        stage('Docker Infrastructure') {
             steps {
                 script {
-                    // Utilisation de docker-compose pour le déploiement final
-                    sh "docker-compose down || true"
-                    sh "docker-compose up -d --build"
+                    echo "Démarrage de l'infrastructure via ${env.DOCKER_CMD}..."
+                    // On reconstruit les images pour être sûr d'avoir le dernier code
+                    sh "${env.DOCKER_CMD} down --remove-orphans"
+                    sh "${env.DOCKER_CMD} up -d --build"
                 }
             }
+        }
+
+        stage('Validation (Healthcheck)') {
+            steps {
+                script {
+                    echo "Attente du démarrage (30s)..."
+                    sleep 30
+                    // Vérifie si la page d'accueil répond (HTTP 200)
+                    sh "curl -sI http://localhost:8080 | grep 'HTTP/1.1 200' || (echo 'L'application n'est pas prête' && exit 1)"
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Archive les rapports de tests pour les voir dans l'interface Jenkins
+            junit '**/target/surefire-reports/*.xml'
+        }
+        success {
+            echo "Phase 1 terminée avec succès : Environnement Stable et Reproductible."
+        }
+        failure {
+            echo "Échec détecté. Consultez les logs Docker avec : docker logs <container_id>"
         }
     }
 }
