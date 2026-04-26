@@ -87,20 +87,30 @@ pipeline {
     }
 
 post {
-    always {
-        sh './collect_metrics.sh'
-        archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
-    }
-}
-    post {
         always {
-            // Archivage des métriques pour la génération du futur dataset (Etape 4 & 5)
+            // 1. Rapports de tests standards pour Jenkins
             junit '**/target/surefire-reports/*.xml'
+            
+            // 2. Archivage des rapports HTML de couverture (JaCoCo)
             archiveArtifacts artifacts: 'target/site/jacoco/**', allowEmptyArchive: true
-            echo "Collecte des métriques terminée pour ce run." [cite: 310, 312]
+            
+            echo "📊 Lancement de l'instrumentation (collect_metrics.sh)..."
+            
+            // 3. Exécution de ton script de collecte de données (Phase 1 - Étape 4)
+            // Assure-toi que le fichier est bien à la racine de PetClinic-ci
+            sh './collect_metrics.sh'
+            
+            // 4. Archivage du dossier contenant tes CSV et métriques de thèse
+            // C'est ce dossier qui servira à construire ton dataset de 300 runs
+            archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
+            
+            echo "✅ Collecte des métriques terminée pour le build #${BUILD_NUMBER}."
         }
         success {
-            echo "Phase 1 - Semaine 7 : Points de décision validés." [cite: 447, 448]
+            echo "Phase 1 - Semaine 7 : Points de décision validés et enregistrés."
+        }
+        failure {
+            echo "Échec détecté. Les métriques d'échec ont été enregistrées dans pipeline-data."
         }
     }
 }
