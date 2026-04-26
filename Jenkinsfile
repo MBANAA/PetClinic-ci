@@ -38,14 +38,6 @@ pipeline {
             }
         }
 
-stage('Diagnostic') {
-    steps {
-        sh 'whoami'
-        sh 'groups'
-        sh 'which docker || echo "docker non trouvé"'
-        sh 'docker --version || echo "docker ne repond pas"'
-    }
-}
 
 
      stage('Docker Infrastructure') {
