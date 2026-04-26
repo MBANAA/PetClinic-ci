@@ -62,17 +62,18 @@ stage('Diagnostic') {
             }
         }
 
-        stage('Validation (Healthcheck)') {
+  stage('Validation (Healthcheck)') {
             steps {
                 script {
-                    echo "Attente du démarrage (30s)..."
-                    sleep 30
-                    // Vérifie si la page d'accueil répond (HTTP 200)
-                    sh "curl -sI http://localhost:8080 | grep 'HTTP/1.1 200' || (echo 'L'application n'est pas prête' && exit 1)"
+                    echo "Attente du démarrage de Spring Boot..."
+                    // On augmente un peu le temps pour laisser MySQL et Spring s'aligner
+                    sleep 45 
+                    
+                    // On interroge le conteneur par son nom sur le réseau Docker
+                    sh "docker exec jenkins curl -sI http://petclinic-app:8080 | grep 'HTTP/1.1 200' || (echo 'Lapplication nest pas encore prête' && exit 1)"
                 }
             }
         }
-    }
 
     post {
         always {
