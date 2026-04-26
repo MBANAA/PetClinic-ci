@@ -51,12 +51,12 @@ stage('Diagnostic') {
         stage('Docker Infrastructure') {
             steps {
                 script {
-                    echo "Démarrage de l'infrastructure via ${env.DOCKER_CMD}..."
-                    // On reconstruit les images pour être sûr d'avoir le dernier code
-                    sh "${env.DOCKER_CMD} down --remove-orphans"
+                   echo "Nettoyage et démarrage de l'infrastructure..."
+		   // On arrête tout proprement et on supprime les volumes pour repartir à neuf
+                    sh "${env.DOCKER_CMD} down --volumes --remove-orphans"
+                    
+                    // On lance le build et le démarrage en une seule fois
                     sh "${env.DOCKER_CMD} up -d --build"
-                    sh 'docker compose down --remove-orphans'
-                    sh 'docker compose up -d'
                 }
             }
         }
