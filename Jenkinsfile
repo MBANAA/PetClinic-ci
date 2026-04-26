@@ -86,11 +86,8 @@ pipeline {
         }
     }
 
-
     post {
         always {
-
-	
             // Archivage des métriques pour la génération du futur dataset (Etape 4 & 5)
             junit '**/target/surefire-reports/*.xml'
             archiveArtifacts artifacts: 'target/site/jacoco/**', allowEmptyArchive: true
