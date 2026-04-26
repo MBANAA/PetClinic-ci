@@ -43,8 +43,10 @@ pipeline {
                 script {
                     echo "Démarrage de l'infrastructure via ${env.DOCKER_CMD}..."
                     // On reconstruit les images pour être sûr d'avoir le dernier code
-                    sh "${env.DOCKER_CMD} down --remove-orphans"
-                    sh "${env.DOCKER_CMD} up -d --build"
+                    //sh "${env.DOCKER_CMD} down --remove-orphans"
+                    //sh "${env.DOCKER_CMD} up -d --build"
+                    sh 'docker compose down --remove-orphans'
+                    sh 'docker compose up -d'
                 }
             }
         }
