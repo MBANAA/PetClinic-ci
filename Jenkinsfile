@@ -62,21 +62,20 @@ stage('Diagnostic') {
             }
         }
 
-        stage('Validation (Healthcheck)') {
+stage('Validation (Healthcheck)') {
             steps {
                 script {
-                    echo "Attente du démarrage (30s)..."
+                    echo "Attente du démarrage de l'application (45s)..."
                     sleep 45
-
-
-sh "docker exec jenkins curl -sI http://petclinic-app:8080 | grep '200' || (echo \"L'application n'est pas encore prête sur http://petclinic-app:8080\" && exit 1)"
-
-                    // Vérifie si la page d'accueil répond (HTTP 200)
-                    sh "curl -sI http://localhost:8080 | grep 'HTTP/1.1 200' || (echo 'L'application n'est pas prête' && exit 1)"
+                    
+                    // On utilise 'docker exec jenkins' pour tester la connexion 
+                    // vers le conteneur 'petclinic-app' sur le port 8080
+                    sh "docker exec jenkins curl -sI http://petclinic-app:8080 | grep '200' || (echo \"L'application n'est pas encore prête sur http://petclinic-app:8080\" && exit 1)"
                 }
             }
         }
-    }
+    } // Fin du bloc stages
+
 
     post {
         always {
