@@ -62,31 +62,17 @@ stage('Diagnostic') {
             }
         }
 
-stage('Validation (Healthcheck)') {
+        stage('Validation (Healthcheck)') {
             steps {
                 script {
-                    echo "Vérification de la disponibilité de l'application..."
-                    // On laisse 10 secondes de base
-                    sleep 10
-                    
-                    // On tente un curl 5 fois avec 10 secondes d'intervalle entre chaque
-                    sh '''
-                        count=0
-                        while [ $count -lt 6 ]; do
-                            if docker exec jenkins curl -sI http://petclinic-app:8080 | grep "200"; then
-                                echo "L'application est en ligne !"
-                                exit 0
-                            fi
-                            echo "Attente de l'initialisation... ($((count*10))s)"
-                            sleep 10
-                            count=$((count+1))
-                        done
-                        echo "L'application n'a pas répondu à temps."
-                        exit 1
-                    '''
+                    echo "Attente du démarrage (30s)..."
+                    sleep 40
+                    // Vérifie si la page d'accueil répond (HTTP 200)
+                    sh "curl -sI http://localhost:8080 | grep 'HTTP/1.1 200' || (echo 'L'application n'est pas prête' && exit 1)"
                 }
             }
         }
+    }
 
     post {
         always {
