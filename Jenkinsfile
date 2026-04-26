@@ -65,14 +65,16 @@ stage('Diagnostic') {
         stage('Validation (Healthcheck)') {
             steps {
                 script {
-                    echo "Attente du démarrage (30s)..."
-                    sleep 40
-                    // Vérifie si la page d'accueil répond (HTTP 200)
-                    sh "curl -sI http://localhost:8080 | grep 'HTTP/1.1 200' || (echo 'L'application n'est pas prête' && exit 1)"
+                    echo "Attente du démarrage de l'application..."
+                    // On garde un temps de sécurité car Hibernate crée les tables au démarrage
+                    sleep 45
+                    
+                    // On interroge petclinic-app au lieu de localhost
+                    // On utilise 'docker exec' pour être sûr que le curl part du bon endroit
+                    sh "docker exec jenkins curl -sI http://petclinic-app:8080 | grep '200' || (echo \"L'application n'est pas encore prête sur http://petclinic-app:8080\" && exit 1)"
                 }
             }
         }
-    }
 
     post {
         always {
