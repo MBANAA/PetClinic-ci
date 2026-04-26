@@ -65,16 +65,15 @@ stage('Diagnostic') {
 stage('Validation (Healthcheck)') {
             steps {
                 script {
-                    echo "Vérification de la connectivité réseau..."
-                    // On attend que l'app soit bien lancée
+                    echo "Attente du démarrage de l'application (45s)..."
                     sleep 45
                     
-                    // On interroge directement le service petclinic-app
-                    // On utilise -m 10 (timeout de 10s) pour éviter que le curl ne gèle
-                    sh "curl -sI http://petclinic-app:8080 | grep '200' || (echo \"L'application ne répond pas à l'adresse http://petclinic-app:8080\" && exit 1)"
-                }
+                    // On utilise 'docker exec jenkins' pour tester la connexion 
+            sh "docker run --network ced_petclinic_default curlimages/curl:latest -sI http://petclinic-app:8080 | grep '200'"
+		}
             }
         }
+    } // Fin du bloc stages
 
 
     post {
