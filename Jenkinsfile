@@ -48,14 +48,15 @@ stage('Diagnostic') {
 }
 
 
-        stage('Docker Infrastructure') {
+     stage('Docker Infrastructure') {
             steps {
                 script {
-                   echo "Nettoyage et démarrage de l'infrastructure..."
-		   // On arrête tout proprement et on supprime les volumes pour repartir à neuf
-                    sh "${env.DOCKER_CMD} down --volumes --remove-orphans"
+                    echo "Nettoyage forcé des anciens conteneurs..."
+                    // Supprime les conteneurs par leur nom exact, ignore l'erreur s'ils n'existent pas
+                    sh 'docker rm -f petclinic-app petclinic-mysql || true'
                     
-                    // On lance le build et le démarrage en une seule fois
+                    echo "Démarrage de l'infrastructure..."
+                    sh "${env.DOCKER_CMD} down --volumes --remove-orphans"
                     sh "${env.DOCKER_CMD} up -d --build"
                 }
             }
