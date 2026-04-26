@@ -6,12 +6,11 @@ pipeline {
         jdk 'jdk17'
     }
 
-    environment {
-        MAVEN_OPTS = "-Dspring.docker.compose.skip.in-tests=true"
-        IMAGE_NAME = "petclinic-app"
-        // Seuils de décision
-        COVERAGE_THRESHOLD = "80" [cite: 219, 223]
-    }
+   environment {
+    MAVEN_OPTS = '-Dspring.docker.compose.skip.in-tests=true'
+    IMAGE_NAME = 'petclinic-app'
+    COVERAGE_THRESHOLD = '80'
+}
 
     stages {
         stage('Nettoyage & Préparation') {
