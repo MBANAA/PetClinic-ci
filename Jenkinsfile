@@ -16,8 +16,11 @@ pipeline {
         stage('Nettoyage et Preparation') {
             steps {
                 script {
+                    // Prévention contre les caractères Windows invisibles (CRLF)
+                    sh "sed -i 's/\\r//' mvnw || true"
                     sh 'chmod +x mvnw'
                     sh './mvnw clean'
+                    
                     try {
                         sh 'docker compose version'
                         env.DOCKER_CMD = 'docker compose'
@@ -81,8 +84,9 @@ pipeline {
                 script {
                     try {
                         sleep 45
+                        // Utilisation du réseau correct : petclinic_default
                         def response = sh(
-                            script: "docker run --network ced_petclinic_default curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080",
+                            script: "docker run --network petclinic_default curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080",
                             returnStdout: true
                         ).trim()
 
@@ -103,40 +107,47 @@ pipeline {
     post {
         always {
             script {
+                sh "sed -i 's/\\r//' collect_metrics.sh || true"
                 sh 'chmod +x collect_metrics.sh'
 
                 // durée totale du build en secondes
                 def durationSec = (currentBuild.duration / 1000).toString()
 
-                // tu peux récupérer la couverture si le rapport existe
                 def coverage = 'NA'
                 if (fileExists('target/site/jacoco/jacoco.xml')) {
-                    coverage = sh(
-                        script: """
+                    try {
+                        coverage = sh(
+                            script: """
                             python3 - <<'PY'
 import xml.etree.ElementTree as ET
-tree = ET.parse('target/site/jacoco/jacoco.xml')
-root = tree.getroot()
+try:
+    tree = ET.parse('target/site/jacoco/jacoco.xml')
+    root = tree.getroot()
 
-missed = 0
-covered = 0
-for counter in root.findall('.//counter'):
-    if counter.attrib.get('type') == 'LINE':
-        missed = int(counter.attrib.get('missed', 0))
-        covered = int(counter.attrib.get('covered', 0))
-        break
+    missed = 0
+    covered = 0
+    for counter in root.findall('.//counter'):
+        if counter.attrib.get('type') == 'LINE':
+            missed = int(counter.attrib.get('missed', 0))
+            covered = int(counter.attrib.get('covered', 0))
+            break
 
-total = missed + covered
-print(round((covered / total) * 100, 2) if total > 0 else '0.0')
+    total = missed + covered
+    print(round((covered / total) * 100, 2) if total > 0 else '0.0')
+except Exception:
+    print('XML_ERROR')
 PY
-                        """,
-                        returnStdout: true
-                    ).trim()
+                            """,
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        coverage = 'PYTHON_ERR'
+                    }
                 }
 
+                // Suppression de BUILD_NUMBER ici pour respecter la structure du script bash
                 sh """
                 ./collect_metrics.sh \
-                    "${env.BUILD_NUMBER}" \
                     "${env.ST_BUILD}" \
                     "${env.ST_TEST}" \
                     "${env.ST_QUALITY}" \
