@@ -8,12 +8,17 @@ pipeline {
     }
 
     stages {
-        stage('Initialisation') {
+     stage('Initialisation') {
             steps {
                 script {
-                    echo "--- VERIFICATION DES DROITS ---"
+                    echo "--- NETTOYAGE DES CARACTÈRES WINDOWS ---"
+                    // Cette commande supprime les \r (CR) pour convertir en format Linux (LF)
+                    sh "sed -i 's/\\r//' mvnw"
+                    sh "sed -i 's/\\r//' collect_metrics.sh"
+                    
                     sh 'chmod +x mvnw'
                     sh 'chmod +x collect_metrics.sh'
+                    
                     env.ST_BUILD = "STARTED"
                 }
             }
