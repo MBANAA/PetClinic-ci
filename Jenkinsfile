@@ -88,17 +88,10 @@ stage('Analyse Statique') {
 
     post {
         always {
-            // Archivage standard
-            junit '**/target/surefire-reports/*.xml'
-            archiveArtifacts artifacts: 'target/site/jacoco/**', allowEmptyArchive: true
-            
-            echo 'Lancement de la collecte des metriques...'
-            
-            // Exécution du script de collecte (Phase 1 - Étape 4)
-            sh 'chmod +x collect_metrics.sh && ./collect_metrics.sh'
-            
-            // Archivage du dataset de thèse
+            sh "chmod +x collect_metrics.sh"
+            sh "./collect_metrics.sh ${env.ST_BUILD} ${env.ST_TEST} ${env.ST_QUALITY} ${env.ST_DOCKER} ${env.ST_HEALTH}"
             archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
+        }
         }
         success {
             echo 'Phase 1 - Semaine 7 : Succes'
