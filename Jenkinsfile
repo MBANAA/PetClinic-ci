@@ -41,33 +41,24 @@ pipeline {
         }
 
 stage('Build et Tests Unitaires') {
-    steps {
-        script {
-            def start = System.currentTimeMillis()
-            try {
-                // On s'assure que le wrapper est exécutable
-                sh 'chmod +x mvnw'
-                sh "./mvnw jacoco:prepare-agent test jacoco:report -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true"
-                
-                // Calcul du temps de build (conversion en secondes)
-                long end = System.currentTimeMillis()
-                env.ST_BUILD = ((end - start) / 1000).toString()
-                
-                // Extraction du nombre de tests : on cherche dans les rapports XML
-                def testCount = sh(script: "grep -s 'tests=\"' target/surefire-reports/*.xml | awk -F'tests=\"' '{print \$2}' | awk -F'\"' '{print \$1}' | awk '{sum += \$1} END {print sum}' || echo '0'", returnStdout: true).trim()
-                env.ST_TEST = testCount ?: "0"
-                
-                // Extraction de la qualité (nb d'erreurs Checkstyle)
-                def qualityErrors = sh(script: "grep -c '<error' target/checkstyle-result.xml || echo '0'", returnStdout: true).trim()
-                env.ST_QUALITY = qualityErrors
-                
-            } catch (e) {
-                env.ST_BUILD = "-1"
-                echo "Erreur Build: ${e.getMessage()}"
+            steps {
+                script {
+                    long start = System.currentTimeMillis() // Capture le début
+                    try {
+                        sh "./mvnw test -Dtest='!*IntegrationTests'"
+                        
+                        // Calcul de la durée réelle en secondes
+                        long duration = (System.currentTimeMillis() - start) / 1000
+                        env.ST_BUILD = duration.toString() 
+                        
+                        // Extraction du nombre de tests réussis depuis les rapports
+                        env.ST_TEST = sh(script: "grep -r 'testcase' target/surefire-reports/*.xml | wc -l", returnStdout: true).trim()
+                    } catch (e) {
+                        env.ST_BUILD = "0"
+                    }
+                }
             }
         }
-    }
-}
 
         stage('Docker Infrastructure') {
             steps {
@@ -102,13 +93,14 @@ stage('Build et Tests Unitaires') {
         }
     }
 
-  post {
-    always {
-        script {
-            sh "chmod +x collect_metrics.sh"
-            // On force l'utilisation des variables d'environnement mises à jour
-            sh "./collect_metrics.sh '${env.ST_BUILD}' '${env.ST_TEST}' '${env.ST_QUALITY}' '${env.ST_DOCKER}' '${env.ST_HEALTH}'"
+    post {
+        always {
+            script {
+                sh "chmod +x collect_metrics.sh"
+                // On envoie les chiffres au script
+                sh "./collect_metrics.sh '${env.ST_BUILD}' '${env.ST_TEST}' '${env.ST_QUALITY}' '${env.ST_DOCKER}' '${env.ST_HEALTH}'"
+            }
+            archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
         }
     }
-}
 }
