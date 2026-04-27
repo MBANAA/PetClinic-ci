@@ -18,19 +18,7 @@ pipeline {
         ST_HEALTH = "SKIPPED"
     }
 
-stages {
-        stage('Diagnostic Système') {
-            steps {
-                script {
-                    echo "--- VERIFICATION ENVIRONNEMENT ---"
-                    sh 'whoami'
-                    sh 'pwd'
-                    sh 'ls -al' // Pour voir si collect_metrics.sh et mvnw sont là
-                }
-            }
-        }
-        // ... vos autres stages ...
-    }
+
 
 
     stages {
