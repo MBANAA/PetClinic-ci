@@ -40,25 +40,34 @@ pipeline {
             }
         }
 
-        stage('Build et Tests Unitaires') {
-            steps {
-                script {
-                    def start = System.currentTimeMillis()
-                    try {
-                        sh "./mvnw jacoco:prepare-agent test jacoco:report -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true"
-                        
-                        // Métrique 1: Temps de build
-                        env.ST_BUILD = (System.currentTimeMillis() - start) / 1000
-                        
-                        // Métrique 2: Nombre de tests réussis
-                        def testCount = sh(script: "grep -s 'Tests run:' target/surefire-reports/*.txt | awk '{sum += \$3} END {print sum}' || echo '0'", returnStdout: true).trim()
-                        env.ST_TEST = testCount
-                    } catch (e) {
-                        env.ST_BUILD = "-1"
-                    }
-                }
+stage('Build et Tests Unitaires') {
+    steps {
+        script {
+            def start = System.currentTimeMillis()
+            try {
+                // On s'assure que le wrapper est exécutable
+                sh 'chmod +x mvnw'
+                sh "./mvnw jacoco:prepare-agent test jacoco:report -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true"
+                
+                // Calcul du temps de build (conversion en secondes)
+                long end = System.currentTimeMillis()
+                env.ST_BUILD = ((end - start) / 1000).toString()
+                
+                // Extraction du nombre de tests : on cherche dans les rapports XML
+                def testCount = sh(script: "grep -s 'tests=\"' target/surefire-reports/*.xml | awk -F'tests=\"' '{print \$2}' | awk -F'\"' '{print \$1}' | awk '{sum += \$1} END {print sum}' || echo '0'", returnStdout: true).trim()
+                env.ST_TEST = testCount ?: "0"
+                
+                // Extraction de la qualité (nb d'erreurs Checkstyle)
+                def qualityErrors = sh(script: "grep -c '<error' target/checkstyle-result.xml || echo '0'", returnStdout: true).trim()
+                env.ST_QUALITY = qualityErrors
+                
+            } catch (e) {
+                env.ST_BUILD = "-1"
+                echo "Erreur Build: ${e.getMessage()}"
             }
         }
+    }
+}
 
         stage('Docker Infrastructure') {
             steps {
