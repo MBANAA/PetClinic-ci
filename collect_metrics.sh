@@ -1,29 +1,41 @@
 #!/bin/bash
 
+# --- CONFIGURATION ---
 CSV_FILE="pipeline-data/global_dataset.csv"
 mkdir -p pipeline-data
 
-BUILD_NUMBER="${1:-UNKNOWN}"
-ST_BUILD="${2:-NOT_RUN}"
-ST_TEST="${3:-NOT_RUN}"
-ST_QUALITY="${4:-NOT_RUN}"
-ST_DOCKER="${5:-NOT_RUN}"
-ST_HEALTH="${6:-NOT_RUN}"
-DURATION_SEC="${7:-0}"
-COVERAGE="${8:-NA}"
-
-TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
-
+# --- MÉTRIQUES DE DIAGNOSTIC EXISTANTES ---
 JAVA_VER=$(java -version 2>&1 | head -n 1 | cut -d'"' -f2 || echo "NOT_FOUND")
 DISK_SPACE=$(df -h . | tail -1 | awk '{print $4}')
 DOCKER_READY=$(docker ps >/dev/null 2>&1 && echo "READY" || echo "FAILED")
 MVNW_READY=$([ -f "./mvnw" ] && echo "EXISTS" || echo "MISSING")
 
-# Créer l'en-tête si le fichier n'existe pas encore
-if [ ! -f "$CSV_FILE" ]; then
-  echo "build_number,timestamp,build_status,test_status,quality_status,docker_status,health_status,duration_sec,coverage_percent,java_version,disk_space,docker_ready,mvnw_ready" > "$CSV_FILE"
-fi
+# --- NOUVELLES MÉTRIQUES TECHNIQUES ---
+# 1. RAM Disponible en Mo
+RAM_FREE=$(free -m | awk '/^Mem:/{print $4}' || echo "0")
 
-echo "${BUILD_NUMBER},${TIMESTAMP},${ST_BUILD},${ST_TEST},${ST_QUALITY},${ST_DOCKER},${ST_HEALTH},${DURATION_SEC},${COVERAGE},${JAVA_VER},${DISK_SPACE},${DOCKER_READY},${MVNW_READY}" >> "$CSV_FILE"
+# 2. Charge Système (Load Average sur 1 min)
+LOAD_AVG=$(uptime | awk -F'load average:' '{print $2}' | cut -d',' -f1 | xargs || echo "0")
 
-echo "Métriques enregistrées : build=${BUILD_NUMBER}, build=${ST_BUILD}, test=${ST_TEST}, quality=${ST_QUALITY}, docker=${ST_DOCKER}, health=${ST_HEALTH}, duration=${DURATION_SEC}s, coverage=${COVERAGE}%"
+# 3. Latence Réseau (Ping vers Google DNS en ms)
+# Utile pour vérifier si Maven bloque à cause d'une connexion lente
+NET_LATENCY=$(ping -c 1 8.8.8.8 | grep 'time=' | awk -F'time=' '{print $2}' | cut -d' ' -f1 || echo "0")
+
+# 4. Nombre d'images Docker sur le serveur
+# Permet de voir si le serveur s'encombre
+DOCKER_IMG_COUNT=$(docker images -q | wc -l || echo "0")
+
+# --- RÉCUPÉRATION DES STATUTS JENKINS ---
+B_ST=${1:-"SKIPPED"}
+T_ST=${2:-"SKIPPED"}
+Q_ST=${3:-"SKIPPED"}
+D_ST=${4:-"SKIPPED"}
+H_ST=${5:-"SKIPPED"}
+
+# --- ÉCRITURE DANS LE CSV ---
+TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+
+# Nouvelle structure avec 15 colonnes
+echo "${BUILD_NUMBER},${TIMESTAMP},${B_ST},${T_ST},${Q_ST},${D_ST},${H_ST},${JAVA_VER},${DISK_SPACE},${DOCKER_READY},${MVNW_READY},${RAM_FREE},${LOAD_AVG},${NET_LATENCY},${DOCKER_IMG_COUNT}" >> "$CSV_FILE"
+
+echo "📊 METRIQUES : RAM=${RAM_FREE}MB | Load=${LOAD_AVG} | Ping=${NET_LATENCY}ms | Docker_Img=${DOCKER_IMG_COUNT}"
