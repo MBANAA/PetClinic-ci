@@ -102,7 +102,7 @@ stage('Build et Tests Unitaires') {
         }
     }
 
-post {
+  post {
     always {
         script {
             sh "chmod +x collect_metrics.sh"
@@ -110,4 +110,5 @@ post {
             sh "./collect_metrics.sh '${env.ST_BUILD}' '${env.ST_TEST}' '${env.ST_QUALITY}' '${env.ST_DOCKER}' '${env.ST_HEALTH}'"
         }
     }
+}
 }
