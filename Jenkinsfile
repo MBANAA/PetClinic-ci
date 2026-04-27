@@ -1,22 +1,37 @@
 pipeline {
     agent any
 
-     // tools {
-      //    maven 'maven' 
-      //    jdk 'jdk17'
-    //  }
+      tools {
+          maven 'maven' 
+          jdk 'jdk17'
+      }
 
     environment {
         MAVEN_OPTS = '-Dspring.docker.compose.skip.in-tests=true'
         IMAGE_NAME = 'petclinic-app'
         COVERAGE_THRESHOLD = '80'
         // Initialisation par défaut
-        ST_BUILD = "SKIPPED"
-        ST_TEST = "SKIPPED"
-        ST_QUALITY = "SKIPPED"
-        ST_DOCKER = "SKIPPED"
-        ST_HEALTH = "SKIPPED"
+        ST_BUILD = "INIT"
+        ST_TEST = "INIT"
+        ST_QUALITY = "INIT"
+        ST_DOCKER = "INIT"
+        ST_HEALTH = "INIT"
     }
+
+stages {
+        stage('Diagnostic Système') {
+            steps {
+                script {
+                    echo "--- VERIFICATION ENVIRONNEMENT ---"
+                    sh 'whoami'
+                    sh 'pwd'
+                    sh 'ls -al' // Pour voir si collect_metrics.sh et mvnw sont là
+                }
+            }
+        }
+        // ... vos autres stages ...
+    }
+
 
     stages {
         stage('Nettoyage et Preparation') {
