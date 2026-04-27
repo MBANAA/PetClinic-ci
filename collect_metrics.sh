@@ -1,29 +1,40 @@
 #!/bin/bash
 
-# --- CONFIGURATION ---
+# Configuration des fichiers
 OUTPUT_DIR="pipeline-data/runs/run-${BUILD_NUMBER}"
 mkdir -p "$OUTPUT_DIR"
+CSV_FILE="pipeline-data/global_dataset.csv"
+
+# Initialisation de l'en-tête si le fichier n'existe pas
+if [ ! -f "$CSV_FILE" ]; then
+    echo "BuildID,AppName,Timestamp,Commit,ST_Build,ST_Test,ST_Quality,ST_Docker,ST_Health,Coverage,Failures" > "$CSV_FILE"
+fi
+
+# Récupération des statuts (Arguments $1 à $5)
+# On utilise une valeur par défaut "NOT_STARTED" si l'argument est vide
+B_ST=${1:-"NOT_STARTED"}
+T_ST=${2:-"NOT_STARTED"}
+Q_ST=${3:-"NOT_STARTED"}
+D_ST=${4:-"NOT_STARTED"}
+H_ST=${5:-"NOT_STARTED"}
+
+# Extraction des données réelles (Phase 1 - Dataset de valeur)
+if [ -f "target/site/jacoco/jacoco.xml" ]; then
+    COVERAGE=$(grep -oP 'instructions.*?covered="\K[^"]+' target/site/jacoco/jacoco.xml | head -1)
+else
+    COVERAGE="0"
+fi
+
+if [ -d "target/surefire-reports" ]; then
+    TEST_FAIL=$(grep -r "<failure" target/surefire-reports/*.xml 2>/dev/null | wc -l)
+else
+    TEST_FAIL="0"
+fi
+
 TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+APP_NAME="Spring-PetClinic"
 
-# Récupération des arguments envoyés par Jenkins
-# Usage: ./collect_metrics.sh [Status_Build] [Status_Test] [Status_Quality] [Status_Docker] [Status_Health]
-ST_BUILD=${1:-"UNKNOWN"}
-ST_TEST=${2:-"UNKNOWN"}
-ST_QUALITY=${3:-"UNKNOWN"}
-ST_DOCKER=${4:-"UNKNOWN"}
-ST_HEALTH=${5:-"UNKNOWN"}
+# Écriture de la ligne de données
+echo "${BUILD_NUMBER},${APP_NAME},${TIMESTAMP},${GIT_COMMIT},${B_ST},${T_ST},${Q_ST},${D_ST},${H_ST},${COVERAGE},${TEST_FAIL}" >> "$CSV_FILE"
 
-# --- EXTRACTION DES MÉTRIQUES TECHNIQUES ---
-# On analyse les fichiers pour voir s'ils sont vides ou absents
-[ -s "target/site/jacoco/jacoco.xml" ] && VAL_JACOCO="PRESENT" || VAL_JACOCO="MISSING"
-[ -d "target/surefire-reports" ] && VAL_TESTS="PRESENT" || VAL_TESTS="MISSING"
-
-# --- MÉTRIQUES INFRASTRUCTURE ---
-MEM_USAGE=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
-CPU_IDLE=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
-
-# --- CONSTRUCTION DU VECTEUR DE RÉPONSE ---
-# Format : BuildID, Date, Commit, Build_Status, Test_Status, Qual_Status, Docker_Status, Health_Status, Jacoco_File, Test_File, Mem%, Cpu%
-echo "${BUILD_NUMBER},${TIMESTAMP},${GIT_COMMIT},${ST_BUILD},${ST_TEST},${ST_QUALITY},${ST_DOCKER},${ST_HEALTH},${VAL_JACOCO},${VAL_TESTS},${MEM_USAGE},${CPU_IDLE}" >> pipeline-data/global_dataset.csv
-
-echo "✅ Pipeline response recorded for all stages."AILURES}" >> pipeline-data/global_dataset.csv
+echo "📊 [DATASET] Métriques enregistrées : Build=${B_ST}, Tests=${T_ST}, Coverage=${COVERAGE}%"

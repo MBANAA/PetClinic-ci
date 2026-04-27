@@ -11,6 +11,12 @@ pipeline {
         MAVEN_OPTS = '-Dspring.docker.compose.skip.in-tests=true'
         IMAGE_NAME = 'petclinic-app'
         COVERAGE_THRESHOLD = '80'
+	// Initialisation par défaut pour éviter les valeurs nulles
+        ST_BUILD = "SKIPPED"
+        ST_TEST = "SKIPPED"
+        ST_QUALITY = "SKIPPED"
+        ST_DOCKER = "SKIPPED"
+        ST_HEALTH = "SKIPPED"
     }
 
     stages {
@@ -88,8 +94,15 @@ stage('Analyse Statique') {
 
     post {
         always {
-            sh "chmod +x collect_metrics.sh"
-            sh "./collect_metrics.sh ${env.ST_BUILD} ${env.ST_TEST} ${env.ST_QUALITY} ${env.ST_DOCKER} ${env.ST_HEALTH}"
+         
+            script {
+                // Rendre le script exécutable
+                sh "chmod +x collect_metrics.sh"
+                
+                // Appel sécurisé avec toutes les variables d'état
+                sh "./collect_metrics.sh ${env.ST_BUILD} ${env.ST_TEST} ${env.ST_QUALITY} ${env.ST_DOCKER} ${env.ST_HEALTH}"
+            }
+            // Archivage pour récupération manuelle
             archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
         }
         }
