@@ -92,22 +92,22 @@ stage('Analyse Statique') {
         }
     }
 
-    post {
+post {
         always {
-         
             script {
                 // Rendre le script exécutable
                 sh "chmod +x collect_metrics.sh"
                 
                 // Appel sécurisé avec toutes les variables d'état
+                // On utilise les doubles guillemets pour que Jenkins remplace les variables
                 sh "./collect_metrics.sh ${env.ST_BUILD} ${env.ST_TEST} ${env.ST_QUALITY} ${env.ST_DOCKER} ${env.ST_HEALTH}"
             }
-            // Archivage pour récupération manuelle
+            // Archivage pour ton dataset de thèse
             archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
-        }
-        }
-        success {
+        } // <--- Cette accolade ferme 'always'
+
+        success { // <--- Ce bloc doit rester à l'intérieur de 'post'
             echo 'Phase 1 - Semaine 7 : Succes'
         }
-    }
+    } // <--- Cette accolade ferme enfin 'post'
 }
