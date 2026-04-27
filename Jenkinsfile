@@ -2,24 +2,19 @@ pipeline {
     agent any
 
     environment {
-        // Initialisation propre
         ST_BUILD = "PENDING"
         ST_TEST = "PENDING"
     }
 
     stages {
-     stage('Initialisation') {
+        stage('Initialisation') {
             steps {
                 script {
-                    echo "--- NETTOYAGE DES CARACTÈRES WINDOWS ---"
-                    // Cette commande supprime les \r (CR) pour convertir en format Linux (LF)
-                    sh "sed -i 's/\\r//' mvnw"
+                    echo "--- NETTOYAGE ET FIX DES PERMISSIONS ---"
+                    // On convertit les fichiers au cas où
                     sh "sed -i 's/\\r//' collect_metrics.sh"
-                    
-                    sh 'chmod +x mvnw'
-                    sh 'chmod +x collect_metrics.sh'
-                    
-                    env.ST_BUILD = "STARTED"
+                    sh "chmod +x collect_metrics.sh"
+                    env.ST_BUILD = "READY"
                 }
             }
         }
@@ -28,12 +23,13 @@ pipeline {
             steps {
                 script {
                     try {
-                        // On utilise ./mvnw pour ne pas dépendre du bloc 'tools'
-                        sh './mvnw clean compile -DskipTests'
+                        echo "--- TENTATIVE DE COMPILATION VIA MAVEN SYSTEME ---"
+                        // On utilise 'mvn' au lieu de './mvnw' pour éviter le bug CRLF
+                        sh 'mvn clean compile -DskipTests'
                         env.ST_BUILD = "SUCCESS"
                     } catch (e) {
                         env.ST_BUILD = "FAILURE"
-                        echo "Erreur de compilation : ${e.getMessage()}"
+                        echo "ERREUR : ${e.getMessage()}"
                     }
                 }
             }
@@ -43,8 +39,8 @@ pipeline {
     post {
         always {
             script {
-                // On s'assure que les variables ne sont pas vides pour le CSV
-                def b_stat = env.ST_BUILD ?: "FAILED_AT_START"
+                // On s'assure d'avoir des valeurs pour le CSV
+                def b_stat = env.ST_BUILD ?: "CRASH_SYSTEME"
                 def t_stat = env.ST_TEST ?: "SKIPPED"
                 
                 sh "./collect_metrics.sh ${b_stat} ${t_stat} SKIPPED SKIPPED SKIPPED"
