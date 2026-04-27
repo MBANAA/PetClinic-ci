@@ -11,11 +11,11 @@ pipeline {
         IMAGE_NAME = 'petclinic-app'
         COVERAGE_THRESHOLD = '80'
         // Initialisation par défaut
-        ST_BUILD = "INIT"
-        ST_TEST = "INIT"
-        ST_QUALITY = "INIT"
-        ST_DOCKER = "INIT"
-        ST_HEALTH = "INIT"
+        ST_BUILD = "SKIPPED"
+        ST_TEST = "SKIPPED"
+        ST_QUALITY = "SKIPPED"
+        ST_DOCKER = "SKIPPED"
+        ST_HEALTH = "SKIPPED"
     }
 
 stages {
