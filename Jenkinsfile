@@ -102,14 +102,12 @@ stage('Build et Tests Unitaires') {
         }
     }
 
-    post {
-        always {
-            script {
-                sh "chmod +x collect_metrics.sh"
-                // On envoie les chiffres au script
-                sh "./collect_metrics.sh '${env.ST_BUILD}' '${env.ST_TEST}' '${env.ST_QUALITY}' '${env.ST_DOCKER}' '${env.ST_HEALTH}'"
-            }
-            archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
+post {
+    always {
+        script {
+            sh "chmod +x collect_metrics.sh"
+            // On force l'utilisation des variables d'environnement mises à jour
+            sh "./collect_metrics.sh '${env.ST_BUILD}' '${env.ST_TEST}' '${env.ST_QUALITY}' '${env.ST_DOCKER}' '${env.ST_HEALTH}'"
         }
     }
 }
