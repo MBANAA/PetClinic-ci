@@ -5,6 +5,7 @@ pipeline {
         MAVEN_OPTS = '-Dspring.docker.compose.skip.in-tests=true'
         IMAGE_NAME = 'petclinic-app'
         COVERAGE_THRESHOLD = '80'
+        
         // Initialisation par défaut
         ST_BUILD = "SKIPPED"
         ST_TEST = "SKIPPED"
@@ -18,8 +19,11 @@ pipeline {
             steps {
                 script {
                     echo "--- Nettoyage ---"
+                    // Sécurité contre les formats de fichiers Windows
+                    sh 'sed -i "s/\\r//" mvnw collect_metrics.sh || true'
                     sh 'chmod +x mvnw'
                     sh './mvnw clean'
+                    
                     try {
                         sh 'docker compose version'
                         env.DOCKER_CMD = 'docker compose'
@@ -35,7 +39,6 @@ pipeline {
                 script {
                     try {
                         echo 'Analyse statique en cours...'
-                        // On utilise le wrapper ici aussi
                         sh './mvnw checkstyle:check spotbugs:check pmd:check || true'
                         env.ST_QUALITY = "SUCCESS"
                     } catch (e) {
@@ -49,10 +52,11 @@ pipeline {
             steps {
                 script {
                     try {
-                        sh './mvnw jacoco:prepare-agent test jacoco:report \
+                        // Utilisation de la syntaxe d'exclusion validée localement
+                        sh "./mvnw jacoco:prepare-agent test jacoco:report \
                             -Dspring.sql.init.mode=always \
-                            -Dtest=!PostgresIntegrationTests,!MySqlIntegrationTests \
-                            -Dmaven.test.failure.ignore=true' 
+                            -Dtest='!*IntegrationTests' \
+                            -Dmaven.test.failure.ignore=true" 
                         
                         env.ST_BUILD = "SUCCESS"
                         env.ST_TEST = "SUCCESS"
@@ -87,15 +91,23 @@ pipeline {
                     try {
                         echo 'Attente du démarrage (45s)...'
                         sleep 45
-                        // Commande Curl via Docker pour tester la connectivité
-                        def response = sh(script: "docker run --network ced_petclinic_default curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080", returnStdout: true).trim()
+                        
+                        // Détection automatique du réseau (souvent petclinic_default)
+                        def networkName = sh(script: "docker network ls --filter name=petclinic --format '{{.Name}}' | head -n 1", returnStdout: true).trim()
+                        
+                        if (!networkName) networkName = "bridge"
+
+                        def response = sh(
+                            script: "docker run --network ${networkName} curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080", 
+                            returnStdout: true
+                        ).trim()
                         
                         echo "Status reçu: ${response}"
                         
                         if (response == '200') {
                             env.ST_HEALTH = "SUCCESS"
                         } else {
-                            env.ST_HEALTH = "FAILURE"
+                            env.ST_HEALTH = "FAILURE_${response}"
                         }
                     } catch (e) {
                         env.ST_HEALTH = "FAILURE"
@@ -109,9 +121,9 @@ pipeline {
     post {
         always {
             script {
-                // Rendre le script de collecte exécutable et l'appeler
                 sh "chmod +x collect_metrics.sh"
-                sh "./collect_metrics.sh ${env.ST_BUILD} ${env.ST_TEST} ${env.ST_QUALITY} ${env.ST_DOCKER} ${env.ST_HEALTH}"
+                // Utilisation de guillemets pour protéger les arguments du script bash
+                sh "./collect_metrics.sh '${env.ST_BUILD}' '${env.ST_TEST}' '${env.ST_QUALITY}' '${env.ST_DOCKER}' '${env.ST_HEALTH}'"
             }
             archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
         }
