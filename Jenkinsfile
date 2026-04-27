@@ -1,10 +1,10 @@
 pipeline {
     agent any
 
-    tools {
-        maven 'maven' 
-        jdk 'jdk17'
-    }
+     // tools {
+      //    maven 'maven' 
+      //    jdk 'jdk17'
+    //  }
 
     environment {
         MAVEN_OPTS = '-Dspring.docker.compose.skip.in-tests=true'
