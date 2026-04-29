@@ -43,22 +43,29 @@ pipeline {
 stage('Build et Tests Unitaires') {
     steps {
         script {
-            long start = System.currentTimeMillis()
-            // On ignore les erreurs de tests pour que le pipeline continue et remplisse le CSV
-            sh "./mvnw test -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true || true"
+            def start = System.currentTimeMillis()
             
-            // 1. Calcul du temps réel
-            environment.ST_BUILD = 12
+            // On exécute Maven
+            sh "./mvnw test -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true"
             
-            // 2. Extraction du nombre de tests (Lecture directe des fichiers XML générés)
-            env.ST_TEST = sh(script: "grep -r '<testcase' target/surefire-reports/*.xml | wc -l || echo '0'", returnStdout: true).trim()
+            // CALCUL DU TEMPS : On utilise 'def' pour forcer le calcul puis on assigne à env
+            def duration = (System.currentTimeMillis() - start) / 1000
+            env.ST_BUILD = duration.toString()
             
-            // 3. Extraction des échecs
-            env.ST_FAIL = sh(script: "grep -r '<failure' target/surefire-reports/*.xml | wc -l || echo '0'", returnStdout: true).trim()
+            // EXTRACTION TESTS : On liste le dossier pour être sûr du chemin
+            // On utilise find pour chercher les fichiers XML récursivement
+            def count = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -l '<testcase' {} + | xargs grep -c '<testcase' | awk -F: '{sum += \$2} END {print sum}' || echo '0'", returnStdout: true).trim()
+            env.ST_TEST = (count == "" || count == "null") ? "0" : count
+
+            // EXTRACTION FAILURES
+            def fails = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -l '<failure' {} + | xargs grep -c '<failure' | awk -F: '{sum += \$2} END {print sum}' || echo '0'", returnStdout: true).trim()
+            env.ST_FAIL = (fails == "" || fails == "null") ? "0" : fails
+            
+            // Debug : Affiche dans la console Jenkins pour vérifier en direct
+            echo "VALEURS CAPTURÉES : Build=${env.ST_BUILD}s, Tests=${env.ST_TEST}, Fails=${env.ST_FAIL}"
         }
     }
 }
-
 stage('Docker Infrastructure') {
     steps {
         script {
