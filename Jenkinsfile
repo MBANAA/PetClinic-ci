@@ -51,7 +51,7 @@ stage('Build et Tests Unitaires') {
             // CALCUL DU TEMPS : On utilise 'def' pour forcer le calcul puis on assigne à env
             def duration = (System.currentTimeMillis() - start) / 1000
             env.ST_BUILD = duration.toString()
-            env["ST_BUILD"] = "${duration}"
+
             
             // EXTRACTION TESTS : On liste le dossier pour être sûr du chemin
             // On utilise find pour chercher les fichiers XML récursivement
