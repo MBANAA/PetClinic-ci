@@ -104,39 +104,17 @@ pipeline {
         }
     }
 
-    post {
+post {
         always {
             script {
                 sh "mkdir -p pipeline-data"
-
-                def summary = """
-                ====================================================
-                📊 RÉSUMÉ DES MÉTRIQUES DU PIPELINE
-                ====================================================
-                ⏱️ Temps de Build    : ${metrics.build} s
-                ✅ Tests trouvés     : ${metrics.test}
-                ❌ Échecs Tests      : ${metrics.fail}
-                📈 Couverture Code   : ${metrics.coverage}%
-                ⚠️ Alertes (Qual+Sec): ${metrics.quality}
-                🐳 Taille Image      : ${metrics.docker} Mo
-                💓 Status Health     : ${metrics.health}
-                ====================================================
-                """
-                echo summary
-
-                // Envoi des 7 arguments réels au script
-                sh """
-                    ./collect_metrics.sh \
-                    '${metrics.build}' \
-                    '${metrics.test}' \
-                    '${metrics.fail}' \
-                    '${metrics.coverage}' \
-                    '${metrics.quality}' \
-                    '${metrics.docker}' \
-                    '${metrics.health}'
-                """
+                
+                // Appel simplifié sans sauts de ligne complexes
+                sh "./collect_metrics.sh ${metrics.build} ${metrics.test} ${metrics.fail} ${metrics.coverage} ${metrics.quality} ${metrics.docker} ${metrics.health}"
+                
+                echo "Derniere ligne du dataset :"
+                sh "tail -n 1 pipeline-data/global_dataset.csv"
             }
             archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
         }
     }
-}
