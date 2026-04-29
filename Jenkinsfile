@@ -1,24 +1,30 @@
+import groovy.transform.Field
+
+// Définition de l'objet global pour stocker les métriques (évite le reset à 0)
+@Field def metrics = [
+    build: "0",
+    test: "0",
+    fail: "0",
+    quality: "0",
+    docker: "0",
+    health: "0"
+]
+
 pipeline {
     agent any
 
     environment {
         MAVEN_OPTS = '-Dspring.docker.compose.skip.in-tests=true'
         IMAGE_NAME = 'petclinic-app'
-        
-        // Initialisation des métriques (valeurs par défaut numériques pour le CSV)
-        ST_BUILD = "0"     // Sera le temps de build en secondes
-        ST_TEST = "0"      // Sera le nombre de tests réussis
-        ST_QUALITY = "0"   // Sera le nombre d'alertes trouvées
-        ST_DOCKER = "0"    // Sera la taille de l'image en Mo
-        ST_HEALTH = "0"    // Sera le code HTTP (ex: 200)
     }
 
     stages {
         stage('Nettoyage et Preparation') {
             steps {
                 script {
+                    // Correction des fins de ligne (Windows vs Linux) et permissions
                     sh 'sed -i "s/\\r//" mvnw collect_metrics.sh || true'
-                    sh 'chmod +x mvnw'
+                    sh 'chmod +x mvnw collect_metrics.sh'
                     sh './mvnw clean'
                     env.DOCKER_CMD = sh(script: "docker compose version >/dev/null 2>&1 && echo 'docker compose' || echo 'docker-compose'", returnStdout: true).trim()
                 }
@@ -29,66 +35,64 @@ pipeline {
             steps {
                 script {
                     try {
-                        // On compte le nombre de lignes d'alertes dans les rapports
                         sh './mvnw checkstyle:check spotbugs:check pmd:check || true'
+                        // On compte les erreurs dans les rapports XML générés
                         def alerts = sh(script: "grep -r '<error' target/*.xml 2>/dev/null | wc -l || echo '0'", returnStdout: true).trim()
-                        env.ST_QUALITY = alerts
+                        metrics.quality = alerts
                     } catch (e) {
-                        env.ST_QUALITY = "-1"
+                        metrics.quality = "-1"
                     }
                 }
             }
         }
 
-stage('Build et Tests Unitaires') {
-    steps {
-        script {
-            def start = System.currentTimeMillis()
-            
-            // On exécute Maven
-            sh "./mvnw test -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true"
-            
-            // CALCUL DU TEMPS : On utilise 'def' pour forcer le calcul puis on assigne à env
-            def duration = (System.currentTimeMillis() - start) / 1000
-            env.ST_BUILD = duration.toString()
+        stage('Build et Tests Unitaires') {
+            steps {
+                script {
+                    def start = System.currentTimeMillis()
+                    
+                    // Exécution des tests (ignore les échecs pour continuer le pipeline)
+                    sh "./mvnw test -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true"
+                    
+                    // 1. Calcul du temps de build réel
+                    metrics.build = ((System.currentTimeMillis() - start) / 1000).toString()
+                    
+                    // 2. Extraction robuste des tests via find et awk
+                    def count = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -l '<testcase' {} + | xargs grep -c '<testcase' | awk -F: '{sum += \$2} END {print sum}' || echo '0'", returnStdout: true).trim()
+                    metrics.test = (count == "" || count == "null" || count == "0") ? "0" : count
 
-            
-            // EXTRACTION TESTS : On liste le dossier pour être sûr du chemin
-            // On utilise find pour chercher les fichiers XML récursivement
-            def count = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -l '<testcase' {} + | xargs grep -c '<testcase' | awk -F: '{sum += \$2} END {print sum}' || echo '0'", returnStdout: true).trim()
-            env.ST_TEST = (count == "" || count == "null") ? "0" : count
+                    // 3. Extraction des échecs (Failures)
+                    def fails = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -l '<failure' {} + | xargs grep -c '<failure' | awk -F: '{sum += \$2} END {print sum}' || echo '0'", returnStdout: true).trim()
+                    metrics.fail = (fails == "" || fails == "null") ? "0" : fails
+                    
+                    echo "DEBUG: Capture terminée -> Build: ${metrics.build}s, Tests: ${metrics.test}"
+                }
+            }
+        }
 
-            // EXTRACTION FAILURES
-            def fails = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -l '<failure' {} + | xargs grep -c '<failure' | awk -F: '{sum += \$2} END {print sum}' || echo '0'", returnStdout: true).trim()
-            env.ST_FAIL = (fails == "" || fails == "null") ? "0" : fails
-            
-            // Debug : Affiche dans la console Jenkins pour vérifier en direct
-            echo "VALEURS CAPTURÉES : Build=${env.ST_BUILD}s, Tests=${env.ST_TEST}, Fails=${env.ST_FAIL}"
+        stage('Docker Infrastructure') {
+            steps {
+                script {
+                    sh "${env.DOCKER_CMD} up -d --build"
+                    // Extraction de la taille réelle de l'image
+                    def rawSize = sh(script: "docker images ${IMAGE_NAME} --format '{{.Size}}' | sed 's/MB//' | sed 's/GB/000/' || echo '0'", returnStdout: true).trim()
+                    metrics.docker = rawSize
+                }
+            }
         }
-    }
-}
-stage('Docker Infrastructure') {
-    steps {
-        script {
-            sh "${env.DOCKER_CMD} up -d --build"
-            // On extrait la taille en Mo (ex: 420MB -> 420)
-            def rawSize = sh(script: "docker images ${IMAGE_NAME} --format '{{.Size}}' | sed 's/MB//' | sed 's/GB/000/' || echo '0'", returnStdout: true).trim()
-            env.ST_DOCKER = rawSize
-        }
-    }
-}
+
         stage('Validation Healthcheck') {
             steps {
                 script {
                     try {
-                        sleep 45
+                        echo "Attente du démarrage de l'application..."
+                        sleep 30
+                        // Détection dynamique du réseau docker
                         def networkName = sh(script: "docker network ls --filter name=petclinic --format '{{.Name}}' | head -n 1", returnStdout: true).trim() ?: "bridge"
-                        def response = sh(script: "docker run --network ${networkName} curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080", returnStdout: true).trim()
-                        
-                        // Métrique: Le code HTTP réel (200, 404, 500, etc.)
-                        env.ST_HEALTH = response
+                        def response = sh(script: "docker run --network ${networkName} curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080 || echo '000'", returnStdout: true).trim()
+                        metrics.health = response
                     } catch (e) {
-                        env.ST_HEALTH = "000"
+                        metrics.health = "500"
                     }
                 }
             }
@@ -98,33 +102,40 @@ stage('Docker Infrastructure') {
     post {
         always {
             script {
-		// 1. Préparation du message
-            def summary = """
-            ====================================================
-            📊 RÉSUMÉ DES MÉTRIQUES DU PIPELINE
-            ====================================================
-            ⏱️ Temps de Build    : ${env.ST_BUILD} secondes
-            ✅ Tests réussis     : ${env.ST_TEST}
-            ⚠️ Alertes Qualité   : ${env.ST_QUALITY}
-            🐳 Taille Image      : ${env.ST_DOCKER} Mo
-            💓 Status Health     : ${env.ST_HEALTH}
-            ====================================================
-            """
-            
-            // 2. Affichage dans le terminal Jenkins
-            echo summary
+                // Création du dossier si inexistant
+                sh "mkdir -p pipeline-data"
 
+                def summary = """
+                ====================================================
+                📊 RÉSUMÉ DES MÉTRIQUES DU PIPELINE
+                ====================================================
+                ⏱️ Temps de Build    : ${metrics.build} secondes
+                ✅ Tests trouvés     : ${metrics.test}
+                ❌ Échecs Tests      : ${metrics.fail}
+                ⚠️ Alertes Qualité   : ${metrics.quality}
+                🐳 Taille Image      : ${metrics.docker} Mo
+                💓 Status Health     : ${metrics.health}
+                ====================================================
+                """
+                echo summary
 
-                sh "chmod +x collect_metrics.sh"
-                // On envoie les chiffres au script
-                sh "./collect_metrics.sh '${env.ST_BUILD}' '${env.ST_TEST}' '${env.ST_QUALITY}' '${env.ST_DOCKER}' '${env.ST_HEALTH}'"
+                // Envoi des arguments au script de collecte (Ordre respecté pour ton CSV)
+                // On passe les 7 arguments attendus par ton script collect_metrics.sh
+                sh """
+                    ./collect_metrics.sh \
+                    '${metrics.build}' \
+                    '${metrics.test}' \
+                    '${metrics.fail}' \
+                    '0' \
+                    '0' \
+                    '${metrics.docker}' \
+                    '${metrics.health}'
+                """
 
-	// 4. Optionnel : Afficher la dernière ligne du CSV pour vérification
-            echo "Dernière ligne ajoutée au dataset :"
-            sh "tail -n 1 pipeline-data/global_dataset.csv"
-		
+                echo "Dernière entrée dans le dataset :"
+                sh "tail -n 1 pipeline-data/global_dataset.csv || echo 'Fichier CSV vide'"
             }
-            archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
         }
     }
 }
