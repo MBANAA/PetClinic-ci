@@ -104,17 +104,36 @@ pipeline {
         }
     }
 
-post {
+   post {
         always {
             script {
+                // 1. On s'assure que le dossier existe
                 sh "mkdir -p pipeline-data"
-                
-                // Appel simplifié sans sauts de ligne complexes
+
+                // 2. Affichage du résumé
+                def summary = """
+                ====================================================
+                📊 RÉSUMÉ DES MÉTRIQUES DU PIPELINE
+                ====================================================
+                ⏱️ Temps de Build    : ${metrics.build} s
+                ✅ Tests trouvés     : ${metrics.test}
+                ❌ Échecs Tests      : ${metrics.fail}
+                📈 Couverture Code   : ${metrics.coverage}%
+                ⚠️ Alertes (Qual+Sec): ${metrics.quality}
+                🐳 Taille Image      : ${metrics.docker} Mo
+                💓 Status Health     : ${metrics.health}
+                ====================================================
+                """
+                echo summary
+
+                // 3. Appel du script sur UNE SEULE LIGNE pour éviter l'erreur EOF
                 sh "./collect_metrics.sh ${metrics.build} ${metrics.test} ${metrics.fail} ${metrics.coverage} ${metrics.quality} ${metrics.docker} ${metrics.health}"
                 
-                echo "Derniere ligne du dataset :"
+                // 4. Vérification immédiate dans les logs
+                echo "Vérification du dataset :"
                 sh "tail -n 1 pipeline-data/global_dataset.csv"
             }
+            // 5. Archivage pour téléchargement
             archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
         }
     }
