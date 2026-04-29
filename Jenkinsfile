@@ -48,7 +48,7 @@ stage('Build et Tests Unitaires') {
             sh "./mvnw test -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true || true"
             
             // 1. Calcul du temps réel
-            env.ST_BUILD = 12
+            environment.ST_BUILD = 12
             
             // 2. Extraction du nombre de tests (Lecture directe des fichiers XML générés)
             env.ST_TEST = sh(script: "grep -r '<testcase' target/surefire-reports/*.xml | wc -l || echo '0'", returnStdout: true).trim()
