@@ -64,19 +64,26 @@ pipeline {
             }
         }
 
-        stage('Docker & Sécurité Scan') {
+  stage('Docker & Sécurité Scan') {
             steps {
                 script {
                     sh "${env.DOCKER_CMD} up -d --build"
                     
-                    // Scan Trivy pour les vulnérabilités Critiques
-                    def trivyCount = sh(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity CRITICAL --quiet ${IMAGE_NAME} | grep 'Total: ' | grep -oE '[0-9]+' | head -n 1 || echo '0'", returnStdout: true).trim()
+                    // 1. On récupère l'ID de l'image associée au conteneur qui tourne
+                    def imageId = sh(script: "docker ps --filter name=petclinic-app --format '{{.Image}}' | head -n 1", returnStdout: true).trim()
                     
-                    // On cumule les vulnérabilités critiques avec les alertes qualité
-                    metrics.quality = (metrics.quality.toInteger() + (trivyCount ?: "0").toInteger()).toString()
-
-                    def rawSize = sh(script: "docker images ${IMAGE_NAME} --format '{{.Size}}' | sed 's/MB//' | sed 's/GB/000/' || echo '0'", returnStdout: true).trim()
-                    metrics.docker = rawSize
+                    if (imageId) {
+                        // 2. Extraction de la taille avec l'ID trouvé
+                        def rawSize = sh(script: "docker images ${imageId} --format '{{.Size}}' | sed 's/MB//g; s/GB/000/g' | head -n 1", returnStdout: true).trim()
+                        metrics.docker = rawSize ?: "0"
+                        
+                        // 3. Scan Trivy avec l'ID (plus sûr que le nom)
+                        def trivyCount = sh(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity CRITICAL --quiet ${imageId} | grep 'Total: ' | grep -oE '[0-9]+' | head -n 1 || echo '0'", returnStdout: true).trim()
+                        metrics.quality = (metrics.quality.toInteger() + (trivyCount ?: "0").toInteger()).toString()
+                    } else {
+                        echo "ATTENTION: Conteneur non trouvé, impossible de mesurer la taille."
+                        metrics.docker = "0"
+                    }
                 }
             }
         }
