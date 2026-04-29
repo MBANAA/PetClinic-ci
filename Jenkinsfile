@@ -1,99 +1,80 @@
 import groovy.transform.Field
 
-// Définition de l'objet global pour stocker les métriques (évite le reset à 0)
 @Field def metrics = [
-    build: "0",
-    test: "0",
-    fail: "0",
-    quality: "0",
-    docker: "0",
-    health: "0"
+    build: "0", test: "0", fail: "0", 
+    coverage: "0", quality: "0", docker: "0", health: "0"
 ]
 
 pipeline {
     agent any
-
     environment {
         MAVEN_OPTS = '-Dspring.docker.compose.skip.in-tests=true'
         IMAGE_NAME = 'petclinic-app'
     }
 
     stages {
-        stage('Nettoyage et Preparation') {
+        stage('Initialisation') {
             steps {
                 script {
-                    // Correction des fins de ligne (Windows vs Linux) et permissions
-                    sh 'sed -i "s/\\r//" mvnw collect_metrics.sh || true'
+                    sh 'sed -i "s/\\r//" mvnw *.sh || true'
                     sh 'chmod +x mvnw collect_metrics.sh'
                     sh './mvnw clean'
-                    env.DOCKER_CMD = sh(script: "docker compose version >/dev/null 2>&1 && echo 'docker compose' || echo 'docker-compose'", returnStdout: true).trim()
                 }
             }
         }
 
-        stage('Analyse Statique') {
+        stage('Qualité & Sécurité Code') {
             steps {
                 script {
-                    try {
-                        sh './mvnw checkstyle:check spotbugs:check pmd:check || true'
-                        // On compte les erreurs dans les rapports XML générés
-                        def alerts = sh(script: "grep -r '<error' target/*.xml 2>/dev/null | wc -l || echo '0'", returnStdout: true).trim()
-                        metrics.quality = alerts
-                    } catch (e) {
-                        metrics.quality = "-1"
-                    }
+                    // Checkstyle + Spotbugs
+                    sh './mvnw checkstyle:check spotbugs:check || true'
+                    metrics.quality = sh(script: "grep -r '<error' target/*.xml 2>/dev/null | wc -l || echo '0'", returnStdout: true).trim()
                 }
             }
         }
 
-        stage('Build et Tests Unitaires') {
+        stage('Build & Tests avec Couverture') {
             steps {
                 script {
                     def start = System.currentTimeMillis()
+                    // Exécution avec JaCoCo pour la couverture
+                    sh "./mvnw test jacoco:report -Dmaven.test.failure.ignore=true"
                     
-                    // Exécution des tests (ignore les échecs pour continuer le pipeline)
-                    sh "./mvnw test -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true"
-                    
-                    // 1. Calcul du temps de build réel
                     metrics.build = ((System.currentTimeMillis() - start) / 1000).toString()
                     
-                    // 2. Extraction robuste des tests via find et awk
-                    def count = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -l '<testcase' {} + | xargs grep -c '<testcase' | awk -F: '{sum += \$2} END {print sum}' || echo '0'", returnStdout: true).trim()
-                    metrics.test = (count == "" || count == "null" || count == "0") ? "0" : count
-
-                    // 3. Extraction des échecs (Failures)
-                    def fails = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -l '<failure' {} + | xargs grep -c '<failure' | awk -F: '{sum += \$2} END {print sum}' || echo '0'", returnStdout: true).trim()
-                    metrics.fail = (fails == "" || fails == "null") ? "0" : fails
+                    // Extraction Tests & Fails
+                    metrics.test = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -c '<testcase' {} + | awk '{s+=\$1} END {print s}' || echo '0'", returnStdout: true).trim()
+                    metrics.fail = sh(script: "find target/surefire-reports/ -name '*.xml' -exec grep -c '<failure' {} + | awk '{s+=\$1} END {print s}' || echo '0'", returnStdout: true).trim()
                     
-                    echo "DEBUG: Capture terminée -> Build: ${metrics.build}s, Tests: ${metrics.test}"
+                    // Extraction Couverture % (via jacoco.csv)
+                    def cov = sh(script: "if [ -f target/site/jacoco/jacoco.csv ]; then tail -n +2 target/site/jacoco/jacoco.csv | awk -F, '{instructions += \$4 + \$5; covered += \$5} END {print int(covered/instructions*100)}'; else echo '0'; fi", returnStdout: true).trim()
+                    metrics.coverage = cov ?: "0"
                 }
             }
         }
 
-        stage('Docker Infrastructure') {
+        stage('Sécurité Docker (Trivy)') {
             steps {
                 script {
-                    sh "${env.DOCKER_CMD} up -d --build"
-                    // Extraction de la taille réelle de l'image
-                    def rawSize = sh(script: "docker images ${IMAGE_NAME} --format '{{.Size}}' | sed 's/MB//' | sed 's/GB/000/' || echo '0'", returnStdout: true).trim()
-                    metrics.docker = rawSize
+                    sh "docker compose build"
+                    // Scan de l'image pour les vulnérabilités critiques
+                    def trivyCount = sh(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity CRITICAL --quiet --format json ${IMAGE_NAME} | grep -o 'VulnerabilityID' | wc -l || echo '0'", returnStdout: true).trim()
+                    // On peut ajouter ces vulnérabilités aux alertes qualité
+                    metrics.quality = (metrics.quality.toInteger() + trivyCount.toInteger()).toString()
                 }
             }
         }
 
-        stage('Validation Healthcheck') {
+        stage('Déploiement & Health') {
             steps {
                 script {
-                    try {
-                        echo "Attente du démarrage de l'application..."
-                        sleep 30
-                        // Détection dynamique du réseau docker
-                        def networkName = sh(script: "docker network ls --filter name=petclinic --format '{{.Name}}' | head -n 1", returnStdout: true).trim() ?: "bridge"
-                        def response = sh(script: "docker run --network ${networkName} curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080 || echo '000'", returnStdout: true).trim()
-                        metrics.health = response
-                    } catch (e) {
-                        metrics.health = "500"
-                    }
+                    sh "docker compose up -d"
+                    sleep 20
+                    def response = sh(script: "docker run --network bridge curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://$(hostname -I | awk '{print \$1}'):8080 || echo '000'", returnStdout: true).trim()
+                    metrics.health = response
+                    
+                    def size = sh(script: "docker images ${IMAGE_NAME} --format '{{.Size}}' | sed 's/MB//' || echo '0'", returnStdout: true).trim()
+                    metrics.docker = size
                 }
             }
         }
@@ -102,40 +83,18 @@ pipeline {
     post {
         always {
             script {
-                // Création du dossier si inexistant
-                sh "mkdir -p pipeline-data"
-
-                def summary = """
-                ====================================================
-                📊 RÉSUMÉ DES MÉTRIQUES DU PIPELINE
-                ====================================================
-                ⏱️ Temps de Build    : ${metrics.build} secondes
-                ✅ Tests trouvés     : ${metrics.test}
-                ❌ Échecs Tests      : ${metrics.fail}
-                ⚠️ Alertes Qualité   : ${metrics.quality}
-                🐳 Taille Image      : ${metrics.docker} Mo
-                💓 Status Health     : ${metrics.health}
-                ====================================================
-                """
-                echo summary
-
-                // Envoi des arguments au script de collecte (Ordre respecté pour ton CSV)
-                // On passe les 7 arguments attendus par ton script collect_metrics.sh
                 sh """
                     ./collect_metrics.sh \
                     '${metrics.build}' \
                     '${metrics.test}' \
                     '${metrics.fail}' \
-                    '0' \
-                    '0' \
+                    '${metrics.coverage}' \
+                    '${metrics.quality}' \
                     '${metrics.docker}' \
                     '${metrics.health}'
                 """
-
-                echo "Dernière entrée dans le dataset :"
-                sh "tail -n 1 pipeline-data/global_dataset.csv || echo 'Fichier CSV vide'"
+                archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
             }
-            archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
         }
     }
 }
