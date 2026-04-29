@@ -50,7 +50,7 @@ stage('Build et Tests Unitaires') {
             
             // CALCUL DU TEMPS : On utilise 'def' pour forcer le calcul puis on assigne à env
             def duration = (System.currentTimeMillis() - start) / 1000
-            env.ST_BUILD = duration.toString()
+            env["ST_BUILD"] = duration.toString()
             
             // EXTRACTION TESTS : On liste le dossier pour être sûr du chemin
             // On utilise find pour chercher les fichiers XML récursivement
@@ -62,7 +62,8 @@ stage('Build et Tests Unitaires') {
             env.ST_FAIL = (fails == "" || fails == "null") ? "0" : fails
             
             // Debug : Affiche dans la console Jenkins pour vérifier en direct
-            echo "VALEURS CAPTURÉES : Build=${duration.toString()}s, Tests=${env.ST_TEST}, Fails=${env.ST_FAIL}"
+            echo "VALEURS CAPTURÉES : Build=${env.ST_BUILD}s, Tests=${env.ST_TEST}, Fails=${env.ST_FAIL}"
+		echo "Le temps de build (via Map) est : " + env['ST_BUILD']
         }
     }
 }
