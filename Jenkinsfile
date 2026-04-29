@@ -41,40 +41,34 @@ pipeline {
         }
 
 stage('Build et Tests Unitaires') {
-            steps {
-                script {
-                    long start = System.currentTimeMillis() // Capture le début
-                    try {
-                        sh "./mvnw test -Dtest='!*IntegrationTests'"
-                        
-                        // Calcul de la durée réelle en secondes
-                        long duration = (System.currentTimeMillis() - start) / 1000
-                        env.ST_BUILD = duration.toString() 
-                        
-                        // Extraction du nombre de tests réussis depuis les rapports
-                        env.ST_TEST = sh(script: "grep -r 'testcase' target/surefire-reports/*.xml | wc -l", returnStdout: true).trim()
-                    } catch (e) {
-                        env.ST_BUILD = "0"
-                    }
-                }
-            }
+    steps {
+        script {
+            long start = System.currentTimeMillis()
+            // On ignore les erreurs de tests pour que le pipeline continue et remplisse le CSV
+            sh "./mvnw test -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true || true"
+            
+            // 1. Calcul du temps réel
+            env.ST_BUILD = ((System.currentTimeMillis() - start) / 1000).toString()
+            
+            // 2. Extraction du nombre de tests (Lecture directe des fichiers XML générés)
+            env.ST_TEST = sh(script: "grep -r '<testcase' target/surefire-reports/*.xml | wc -l || echo '0'", returnStdout: true).trim()
+            
+            // 3. Extraction des échecs
+            env.ST_FAIL = sh(script: "grep -r '<failure' target/surefire-reports/*.xml | wc -l || echo '0'", returnStdout: true).trim()
         }
+    }
+}
 
-        stage('Docker Infrastructure') {
-            steps {
-                script {
-                    try {
-                        sh "${env.DOCKER_CMD} up -d --build"
-                        // Métrique: Taille de l'image en Mo
-                        def size = sh(script: "docker images ${IMAGE_NAME} --format '{{.Size}}' | sed 's/MB//' || echo '0'", returnStdout: true).trim()
-                        env.ST_DOCKER = size
-                    } catch (e) {
-                        env.ST_DOCKER = "-1"
-                    }
-                }
-            }
+stage('Docker Infrastructure') {
+    steps {
+        script {
+            sh "${env.DOCKER_CMD} up -d --build"
+            // On extrait la taille en Mo (ex: 420MB -> 420)
+            def rawSize = sh(script: "docker images ${IMAGE_NAME} --format '{{.Size}}' | sed 's/MB//' | sed 's/GB/000/' || echo '0'", returnStdout: true).trim()
+            env.ST_DOCKER = rawSize
         }
-
+    }
+}
         stage('Validation Healthcheck') {
             steps {
                 script {
