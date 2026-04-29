@@ -96,9 +96,31 @@ stage('Build et Tests Unitaires') {
     post {
         always {
             script {
+		// 1. Préparation du message
+            def summary = """
+            ====================================================
+            📊 RÉSUMÉ DES MÉTRIQUES DU PIPELINE
+            ====================================================
+            ⏱️ Temps de Build    : ${env.ST_BUILD} secondes
+            ✅ Tests réussis     : ${env.ST_TEST}
+            ⚠️ Alertes Qualité   : ${env.ST_QUALITY}
+            🐳 Taille Image      : ${env.ST_DOCKER} Mo
+            💓 Status Health     : ${env.ST_HEALTH}
+            ====================================================
+            """
+            
+            // 2. Affichage dans le terminal Jenkins
+            echo summary
+
+
                 sh "chmod +x collect_metrics.sh"
                 // On envoie les chiffres au script
                 sh "./collect_metrics.sh '${env.ST_BUILD}' '${env.ST_TEST}' '${env.ST_QUALITY}' '${env.ST_DOCKER}' '${env.ST_HEALTH}'"
+
+	// 4. Optionnel : Afficher la dernière ligne du CSV pour vérification
+            echo "Dernière ligne ajoutée au dataset :"
+            sh "tail -n 1 pipeline-data/global_dataset.csv"
+		
             }
             archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
         }
