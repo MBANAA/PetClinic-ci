@@ -108,7 +108,7 @@ pipeline {
         always {
             script {
                 sh "mkdir -p pipeline-data"
-		sh "./collect_metrics.sh ${metrics.build} ${metrics.test} ${metrics.fail} ${metrics.coverage} ${metrics.quality} ${metrics.docker} ${metrics.health}"
+		sh "./collect_metrics.sh ${env.BUILD_ID} ${metrics.test} ${metrics.fail} ${metrics.coverage} ${metrics.quality} ${metrics.docker} ${metrics.health}"
 
                 def summary = """
                 ====================================================
