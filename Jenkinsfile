@@ -104,39 +104,32 @@ pipeline {
         }
     }
 
-    post {
-        always {
-            script {
-                sh "mkdir -p pipeline-data"
+  post {
+    always {
+        script {
+            // 1. Création du dossier
+            sh "mkdir -p pipeline-data"
 
-                def summary = """
-                ====================================================
-                📊 RÉSUMÉ DES MÉTRIQUES DU PIPELINE
-                ====================================================
-                ⏱️ Temps de Build    : ${metrics.build} s
-                ✅ Tests trouvés     : ${metrics.test}
-                ❌ Échecs Tests      : ${metrics.fail}
-                📈 Couverture Code   : ${metrics.coverage}%
-                ⚠️ Alertes (Qual+Sec): ${metrics.quality}
-                🐳 Taille Image      : ${metrics.docker} Mo
-                💓 Status Health     : ${metrics.health}
-                ====================================================
-                """
-                echo summary
+            // 2. APPEL UNIQUE : C'est ici qu'on alimente le dataset (version stable sur une ligne)
+            sh "./collect_metrics.sh ${metrics.build} ${metrics.test} ${metrics.fail} ${metrics.coverage} ${metrics.quality} ${metrics.docker} ${metrics.health}"
 
-                // Envoi des 7 arguments réels au script
-                sh """
-                    ./collect_metrics.sh \
-                    '${metrics.build}' \
-                    '${metrics.test}' \
-                    '${metrics.fail}' \
-                    '${metrics.coverage}' \
-                    '${metrics.quality}' \
-                    '${metrics.docker}' \
-                    '${metrics.health}'
-                """
-            }
-            archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
+            // 3. AFFICHAGE DU RÉSUMÉ : Très utile pour les logs Jenkins
+            def summary = """
+            ====================================================
+            📊 RÉSUMÉ DES MÉTRIQUES DU PIPELINE
+            ====================================================
+            ⏱️ Temps de Build    : ${metrics.build} s
+            ✅ Tests trouvés     : ${metrics.test}
+            ❌ Échecs Tests      : ${metrics.fail}
+            📈 Couverture Code   : ${metrics.coverage}%
+            ⚠️ Alertes (Qual+Sec): ${metrics.quality}
+            🐳 Taille Image      : ${metrics.docker} Mo
+            💓 Status Health     : ${metrics.health}
+            ====================================================
+            """
+            echo summary
         }
+        // 4. ARCHIVAGE : Le fichier CSV est sauvegardé comme artefact
+        archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
     }
 }
