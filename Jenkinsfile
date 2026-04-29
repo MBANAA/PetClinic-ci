@@ -62,7 +62,7 @@ stage('Build et Tests Unitaires') {
             env.ST_FAIL = (fails == "" || fails == "null") ? "0" : fails
             
             // Debug : Affiche dans la console Jenkins pour vérifier en direct
-            echo "VALEURS CAPTURÉES : Build=${env.ST_BUILD}s, Tests=${env.ST_TEST}, Fails=${env.ST_FAIL}"
+            echo "VALEURS CAPTURÉES : Build=${duration.toString()}s, Tests=${env.ST_TEST}, Fails=${env.ST_FAIL}"
         }
     }
 }
