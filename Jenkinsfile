@@ -26,7 +26,7 @@ pipeline {
                     def startTotal = System.currentTimeMillis()
                     env.START_TIME = startTotal.toString()
 		    
-		
+		    sh 'rm pipeline-data/global_dataset.csv'
 
                     sh 'sed -i "s/\\r//" mvnw collect_metrics.sh || true'
                     sh 'chmod +x mvnw collect_metrics.sh'
@@ -111,39 +111,39 @@ pipeline {
         }
     }
 
-    post {
+post {
         always {
             script {
-                // Calcul du temps total final
+                // On s'assure que toutes les métriques sont traitées comme des chaînes simples sans espaces
                 metrics.build_total_time = ((System.currentTimeMillis() - env.START_TIME.toLong()) / 1000).toString()
                 
                 sh "mkdir -p pipeline-data"
                 
-                // Envoi des 18 variables au script (+ le Build ID en premier)
-                sh """
-                ./collect_metrics.sh \
-                ${env.BUILD_ID} \
-                ${metrics.branch} \
-                ${metrics.commit} \
-                ${metrics.author} \
-                ${metrics.files_changed} \
-                ${metrics.loc} \
-                ${metrics.build_total_time} \
-                ${metrics.test_time} \
-                ${metrics.sys_cpu_load} \
-                ${metrics.sys_ram_free} \
-                ${metrics.test_total} \
-                ${metrics.test_fail} \
-                ${metrics.test_skip} \
-                ${metrics.coverage} \
-                ${metrics.code_smells} \
-                ${metrics.vuln_critical} \
-                ${metrics.vuln_high} \
-                ${metrics.docker_size} \
-                ${metrics.health_code}
-                """
+                // Utilisation d'un tableau pour éviter les erreurs de parsing d'arguments
+                def args = [
+                    env.BUILD_ID,
+                    metrics.branch,
+                    metrics.commit,
+                    metrics.author,
+                    metrics.files_changed,
+                    metrics.loc,
+                    metrics.build_total_time,
+                    metrics.test_time,
+                    metrics.sys_cpu_load,
+                    metrics.sys_ram_free,
+                    metrics.test_total,
+                    metrics.test_fail,
+                    metrics.test_skip,
+                    metrics.coverage,
+                    metrics.code_smells,
+                    metrics.vuln_critical,
+                    metrics.vuln_high,
+                    metrics.docker_size,
+                    metrics.health_code
+                ].join(' ')
+
+                sh "./collect_metrics.sh ${args}"
             }
             archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
         }
     }
-}
