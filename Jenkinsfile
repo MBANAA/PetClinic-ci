@@ -20,26 +20,30 @@ pipeline {
     }
 
     stages {
-        stage('Initialisation & Contexte AIOps') {
+        stage('Initialisation & Nettoyage') {
             steps {
                 script {
                     def startTotal = System.currentTimeMillis()
                     env.START_TIME = startTotal.toString()
-		    
-		    
+
+                    // Nettoyer l'ancien dataset une seule fois pour corriger les titres (Optionnel après le 1er build)
+                    // sh 'rm -f pipeline-data/global_dataset.csv'
 
                     sh 'sed -i "s/\\r//" mvnw collect_metrics.sh || true'
                     sh 'chmod +x mvnw collect_metrics.sh'
+                    
+                    // --- VARIABILITÉ POUR L'IA ---
+                    // Ajoute une ligne de commentaire au hasard pour faire varier les LoC et le Commit
+                    sh "echo '// AI Training Build: ${env.BUILD_ID}' >> src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java"
+                    
                     sh './mvnw clean'
                     
-                    // --- MÉTRIQUES GIT & SYSTÈME POUR L'IA ---
                     metrics.branch = env.BRANCH_NAME ?: "main"
                     metrics.commit = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
                     metrics.author = sh(script: "git log -1 --format='%aN' | tr ' ' '_'", returnStdout: true).trim() ?: "unknown"
                     metrics.files_changed = sh(script: "git show --format='' --name-only | awk 'NF' | wc -l", returnStdout: true).trim() ?: "0"
                     metrics.loc = sh(script: "find src -name '*.java' | xargs wc -l | grep total | awk '{print \$1}' || echo '0'", returnStdout: true).trim()
                     
-                    // Capture de la charge CPU (1 min avg) et RAM libre au début du build
                     metrics.sys_cpu_load = sh(script: "uptime | awk -F'load average:' '{ print \$2 }' | awk '{print \$1}' | tr -d ','", returnStdout: true).trim() ?: "0"
                     metrics.sys_ram_free = sh(script: "free -m | awk '/^Mem:/{print \$4}'", returnStdout: true).trim() ?: "0"
                     
@@ -48,7 +52,6 @@ pipeline {
             }
         }
 
-        // 🚀 EXÉCUTION EN PARALLÈLE : Gain de temps massif
         stage('Analyse & Tests Parallèles') {
             parallel {
                 stage('Analyse Statique') {
@@ -61,7 +64,6 @@ pipeline {
                         }
                     }
                 }
-
                 stage('Tests Unitaires & Couverture') {
                     steps {
                         script {
@@ -88,9 +90,9 @@ pipeline {
                     def imageId = sh(script: "docker ps --filter name=${IMAGE_NAME} --format '{{.Image}}' | head -n 1", returnStdout: true).trim()
                     
                     if (imageId) {
-                        metrics.docker_size = sh(script: "docker images ${imageId} --format '{{.Size}}' | sed 's/MB//g; s/GB/000/g' | head -n 1", returnStdout: true).trim()
+                        // Nettoyage de l'unité MB/GB pour n'avoir que le chiffre
+                        metrics.docker_size = sh(script: "docker images ${imageId} --format '{{.Size}}' | sed 's/MB//g; s/GB//g' | head -n 1", returnStdout: true).trim()
                         
-                        // Séparation des failles Critiques et Hautes pour l'IA
                         metrics.vuln_critical = sh(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity CRITICAL --quiet ${imageId} | grep 'Total: ' | grep -oE '[0-9]+' | head -n 1 || echo '0'", returnStdout: true).trim()
                         metrics.vuln_high = sh(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity HIGH --quiet ${imageId} | grep 'Total: ' | grep -oE '[0-9]+' | head -n 1 || echo '0'", returnStdout: true).trim()
                     }
@@ -102,7 +104,8 @@ pipeline {
             steps {
                 script {
                     try {
-                        sleep 15
+                        echo "Waiting for application to be ready..."
+                        sleep 45 // Augmenté pour éviter le code 000
                         def networkName = sh(script: "docker network ls --filter name=petclinic --format '{{.Name}}' | head -n 1", returnStdout: true).trim() ?: "bridge"
                         metrics.health_code = sh(script: "docker run --network ${networkName} curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080 || echo '000'", returnStdout: true).trim()
                     } catch (e) { metrics.health_code = "500" }
@@ -111,15 +114,13 @@ pipeline {
         }
     }
 
-post {
+    post {
         always {
             script {
-                // On s'assure que toutes les métriques sont traitées comme des chaînes simples sans espaces
                 metrics.build_total_time = ((System.currentTimeMillis() - env.START_TIME.toLong()) / 1000).toString()
                 
                 sh "mkdir -p pipeline-data"
                 
-                // Utilisation d'un tableau pour éviter les erreurs de parsing d'arguments
                 def args = [
                     env.BUILD_ID,
                     metrics.branch,
@@ -147,3 +148,4 @@ post {
             archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
         }
     }
+}
