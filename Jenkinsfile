@@ -27,7 +27,7 @@ pipeline {
                     env.START_TIME = startTotal.toString()
 
                     // Nettoyer l'ancien dataset une seule fois pour corriger les titres (Optionnel après le 1er build)
-                    // sh 'rm -f pipeline-data/global_dataset.csv'
+                    sh 'rm -f pipeline-data/global_dataset.csv'
 
                     sh 'sed -i "s/\\r//" mvnw collect_metrics.sh || true'
                     sh 'chmod +x mvnw collect_metrics.sh'
