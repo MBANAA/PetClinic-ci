@@ -1,32 +1,38 @@
 #!/bin/bash
 
-# Configuration
 DATA_DIR="pipeline-data"
 CSV_FILE="$DATA_DIR/global_dataset.csv"
 TIMESTAMP=$(date '+%Y-%m-%d_%H-%M-%S')
 
 mkdir -p "$DATA_DIR"
 
-# Récupération des 12 arguments (Date + 11 variables)
+# Capture des 18 arguments envoyés par Jenkins
 BUILD_ID=${1:-0}
-BRANCH=${2:-"main"}
+BRANCH=${2:-"unknown"}
 COMMIT=${3:-"none"}
-LOC=${4:-0}
-BUILD_TIME=${5:-0}
-TEST_TOTAL=${6:-0}
-TEST_FAIL=${7:-0}
-COVERAGE=${8:-0}
-QUALITY_ALERTS=${9:-0}
-CRITICAL_VULN=${10:-0}
-DOCKER_SIZE=${11:-0}
-HEALTH=${12:-000}
+AUTHOR=${4:-"unknown"}
+FILES_CHANGED=${5:-0}
+LOC=${6:-0}
+BUILD_TIME=${7:-0}
+TEST_TIME=${8:-0}
+SYS_CPU=${9:-0}
+SYS_RAM=${10:-0}
+TEST_TOTAL=${11:-0}
+TEST_FAIL=${12:-0}
+TEST_SKIP=${13:-0}
+COVERAGE=${14:-0}
+SMELLS=${15:-0}
+VULN_CRIT=${16:-0}
+VULN_HIGH=${17:-0}
+DOCKER_SIZE=${18:-0}
+HEALTH=${19:-000}
 
-# Création de l'en-tête riche
+# Création de l'en-tête Ultime pour le Machine Learning
 if [ ! -f "$CSV_FILE" ]; then
-    echo "timestamp,build_id,branch,commit,loc,build_time,tests_total,tests_failed,coverage,quality_alerts,critical_vuln,size_mb,health_code" > "$CSV_FILE"
+    echo "timestamp,build_id,branch,commit,author,files_changed,loc,build_time_sec,test_time_sec,sys_cpu_load,sys_ram_free_mb,tests_total,tests_failed,tests_skipped,coverage_pct,code_smells,vuln_critical,vuln_high,docker_size_mb,health_code" > "$CSV_FILE"
 fi
 
-# Ajout de la ligne formatée
-echo "$TIMESTAMP,$BUILD_ID,$BRANCH,$COMMIT,$LOC,$BUILD_TIME,$TEST_TOTAL,$TEST_FAIL,$COVERAGE,$QUALITY_ALERTS,$CRITICAL_VULN,$DOCKER_SIZE,$HEALTH" >> "$CSV_FILE"
+# Injection de la donnée (20 colonnes au total avec le timestamp)
+echo "$TIMESTAMP,$BUILD_ID,$BRANCH,$COMMIT,$AUTHOR,$FILES_CHANGED,$LOC,$BUILD_TIME,$TEST_TIME,$SYS_CPU,$SYS_RAM,$TEST_TOTAL,$TEST_FAIL,$TEST_SKIP,$COVERAGE,$SMELLS,$VULN_CRIT,$VULN_HIGH,$DOCKER_SIZE,$HEALTH" >> "$CSV_FILE"
 
-echo "✅ Dataset enrichi mis à jour (Build #$BUILD_ID - LoC: $LOC)"
+echo "✅ AIOps Dataset mis à jour avec succès (Build #$BUILD_ID)"
