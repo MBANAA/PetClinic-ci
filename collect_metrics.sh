@@ -7,21 +7,26 @@ TIMESTAMP=$(date '+%Y-%m-%d_%H-%M-%S')
 
 mkdir -p "$DATA_DIR"
 
-# Récupération des arguments (Le 1er est maintenant l'ID Jenkins)
+# Récupération des 12 arguments (Date + 11 variables)
 BUILD_ID=${1:-0}
-TEST_TOTAL=${2:-0}
-TEST_FAIL=${3:-0}
-COVERAGE=${4:-0}
-QUALITY=${5:-0}
-DOCKER_SIZE=${6:-0}
-HEALTH=${7:-000}
+BRANCH=${2:-"main"}
+COMMIT=${3:-"none"}
+LOC=${4:-0}
+BUILD_TIME=${5:-0}
+TEST_TOTAL=${6:-0}
+TEST_FAIL=${7:-0}
+COVERAGE=${8:-0}
+QUALITY_ALERTS=${9:-0}
+CRITICAL_VULN=${10:-0}
+DOCKER_SIZE=${11:-0}
+HEALTH=${12:-000}
 
-# Création de l'en-tête avec build_id
+# Création de l'en-tête riche
 if [ ! -f "$CSV_FILE" ]; then
-    echo "timestamp,build_id,tests_total,tests_failed,coverage,quality,size,health" > "$CSV_FILE"
+    echo "timestamp,build_id,branch,commit,loc,build_time,tests_total,tests_failed,coverage,quality_alerts,critical_vuln,size_mb,health_code" > "$CSV_FILE"
 fi
 
-# Ajout de la ligne
-echo "$TIMESTAMP,$BUILD_ID,$TEST_TOTAL,$TEST_FAIL,$COVERAGE,$QUALITY,$DOCKER_SIZE,$HEALTH" >> "$CSV_FILE"
+# Ajout de la ligne formatée
+echo "$TIMESTAMP,$BUILD_ID,$BRANCH,$COMMIT,$LOC,$BUILD_TIME,$TEST_TOTAL,$TEST_FAIL,$COVERAGE,$QUALITY_ALERTS,$CRITICAL_VULN,$DOCKER_SIZE,$HEALTH" >> "$CSV_FILE"
 
-echo "✅ Données ajoutées (Build ID: $BUILD_ID)"
+echo "✅ Dataset enrichi mis à jour (Build #$BUILD_ID - LoC: $LOC)"
