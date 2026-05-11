@@ -25,6 +25,8 @@ pipeline {
                 script {
                     def startTotal = System.currentTimeMillis()
                     env.START_TIME = startTotal.toString()
+		    
+		sh "rm -f pipeline-data/global_dataset.csv"
 
                     sh 'sed -i "s/\\r//" mvnw collect_metrics.sh || true'
                     sh 'chmod +x mvnw collect_metrics.sh'
