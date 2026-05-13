@@ -23,22 +23,17 @@ pipeline {
         stage('Initialisation & Nettoyage') {
             steps {
                 script {
-                    def startTotal = System.currentTimeMillis()
-                    env.START_TIME = startTotal.toString()
+                    env.START_TIME = System.currentTimeMillis().toString()
 
-                    // Nettoyer l'ancien dataset une seule fois pour corriger les titres (Optionnel après le 1er build)
-                    // sh 'rm -f pipeline-data/global_dataset.csv'
-		    //  sh 'rm -f pipeline-data/*.csv'
-
-
-
-
+                    // Nettoyage des processus et fichiers des builds précédents
+                    sh 'killall sha512sum || true' 
+                    sh 'rm -f src/test/java/org/springframework/samples/petclinic/InjectedFailTest.java'
+                    
                     sh 'sed -i "s/\\r//" mvnw collect_metrics.sh || true'
                     sh 'chmod +x mvnw collect_metrics.sh'
                     
-                    // --- VARIABILITÉ POUR L'IA ---
-                    // Ajoute une ligne de commentaire au hasard pour faire varier les LoC et le Commit
-                    sh "echo '// AI Training Build: ${env.BUILD_ID}' >> src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java"
+                    // VARIABILITÉ : Modification mineure pour changer le commit hash et les LoC
+                    sh "echo '// AI Build: ${env.BUILD_ID}' >> src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java"
                     
                     sh './mvnw clean'
                     
@@ -48,15 +43,39 @@ pipeline {
                     metrics.files_changed = sh(script: "git show --format='' --name-only | awk 'NF' | wc -l", returnStdout: true).trim() ?: "0"
                     metrics.loc = sh(script: "find src -name '*.java' | xargs wc -l | grep total | awk '{print \$1}' || echo '0'", returnStdout: true).trim()
                     
-                    metrics.sys_cpu_load = sh(script: "uptime | awk -F'load average:' '{ print \$2 }' | awk '{print \$1}' | tr -d ','", returnStdout: true).trim() ?: "0"
-                    metrics.sys_ram_free = sh(script: "free -m | awk '/^Mem:/{print \$4}'", returnStdout: true).trim() ?: "0"
-                    
                     env.DOCKER_CMD = sh(script: "docker compose version >/dev/null 2>&1 && echo 'docker compose' || echo 'docker-compose'", returnStdout: true).trim()
                 }
             }
         }
 
-        stage('Analyse & Tests Parallèles') {
+        stage('Génération de Scénarios (Loterie)') {
+            steps {
+                script {
+                    def random = new Random()
+                    int scenario = random.nextInt(100)
+                    echo "🎲 Scénario tiré : ${scenario}"
+
+                    if (scenario < 20) {
+                        echo "⚠️ SCÉNARIO : Injection d'un échec de test (Fail Logiciel)"
+                        sh """
+                        echo 'package org.springframework.samples.petclinic;
+                        import org.junit.jupiter.api.Test;
+                        import static org.junit.jupiter.api.Assertions.fail;
+                        class InjectedFailTest { @Test void forceFail() { fail("Panne simulée"); } }' > src/test/java/org/springframework/samples/petclinic/InjectedFailTest.java
+                        """
+                    } 
+                    else if (scenario < 40) {
+                        echo "🔥 SCÉNARIO : Surcharge CPU (Panne Infra)"
+                        sh "timeout 120s sha512sum /dev/zero &" 
+                    }
+                    else {
+                        echo "✅ SCÉNARIO : Succès nominal"
+                    }
+                }
+            }
+        }
+
+        stage('Mesure Performance & Tests') {
             parallel {
                 stage('Analyse Statique') {
                     steps {
@@ -68,9 +87,13 @@ pipeline {
                         }
                     }
                 }
-                stage('Tests Unitaires & Couverture') {
+                stage('Tests & Metrics Système') {
                     steps {
                         script {
+                            // Capture de la charge pendant l'effort
+                            metrics.sys_cpu_load = sh(script: "uptime | awk -F'load average:' '{ print \$2 }' | awk '{print \$1}' | tr -d ','", returnStdout: true).trim() ?: "0"
+                            metrics.sys_ram_free = sh(script: "free -m | awk '/^Mem:/{print \$4}'", returnStdout: true).trim() ?: "0"
+
                             def startTest = System.currentTimeMillis()
                             sh "./mvnw test jacoco:report -Dtest='!*IntegrationTests' -Dmaven.test.failure.ignore=true"
                             metrics.test_time = ((System.currentTimeMillis() - startTest) / 1000).toString()
@@ -87,46 +110,35 @@ pipeline {
             }
         }
 
- stage('Docker & Sécurité Optimisé') {
-    steps {
-        script {
-            // 1. Build et Up (Docker utilise son cache interne)
-            sh "${env.DOCKER_CMD} up -d --build"
-            def imageId = sh(script: "docker ps --filter name=${IMAGE_NAME} --format '{{.Image}}' | head -n 1", returnStdout: true).trim()
-            
-            if (imageId) {
-                // Taille de l'image
-                metrics.docker_size = sh(script: "docker images ${imageId} --format '{{.Size}}' | sed 's/MB//g; s/GB//g' | head -n 1", returnStdout: true).trim()
-                
-                // 2. Scan Trivy avec CACHE PERSISTANT (divise le temps par 3 ou 4)
-                // On crée un dossier de cache sur ton Windows/Hôte pour Trivy
-                sh "mkdir -p ${env.WORKSPACE}/trivy-cache"
-                
-                // Un seul scan pour récupérer les deux métriques
-                def scanResult = sh(
-                    script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v ${env.WORKSPACE}/trivy-cache:/root/.cache/trivy aquasec/trivy image --quiet --format json ${imageId}",
-                    returnStdout: true
-                ).trim()
+        stage('Docker & Sécurité Optimisé') {
+            steps {
+                script {
+                    sh "${env.DOCKER_CMD} up -d --build"
+                    def imageId = sh(script: "docker ps --filter name=${IMAGE_NAME} --format '{{.Image}}' | head -n 1", returnStdout: true).trim()
+                    
+                    if (imageId) {
+                        metrics.docker_size = sh(script: "docker images ${imageId} --format '{{.Size}}' | sed 's/MB//g; s/GB//g' | head -n 1", returnStdout: true).trim()
+                        sh "mkdir -p ${env.WORKSPACE}/trivy-cache"
+                        
+                        def scanResult = sh(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v ${env.WORKSPACE}/trivy-cache:/root/.cache/trivy aquasec/trivy image --quiet --format json ${imageId}", returnStdout: true).trim()
 
-                // Extraction via manipulation de chaîne (évite d'installer jq)
-                try {
-                    metrics.vuln_critical = sh(script: "echo '${scanResult}' | grep -o '\"Severity\":\"CRITICAL\"' | wc -l", returnStdout: true).trim()
-                    metrics.vuln_high = sh(script: "echo '${scanResult}' | grep -o '\"Severity\":\"HIGH\"' | wc -l", returnStdout: true).trim()
-                } catch (e) {
-                    metrics.vuln_critical = "0"
-                    metrics.vuln_high = "0"
+                        try {
+                            metrics.vuln_critical = sh(script: "echo '${scanResult}' | grep -o '\"Severity\":\"CRITICAL\"' | wc -l", returnStdout: true).trim()
+                            metrics.vuln_high = sh(script: "echo '${scanResult}' | grep -o '\"Severity\":\"HIGH\"' | wc -l", returnStdout: true).trim()
+                        } catch (e) {
+                            metrics.vuln_critical = "0"
+                            metrics.vuln_high = "0"
+                        }
+                    }
                 }
             }
         }
-    }
-}
 
         stage('Validation Healthcheck') {
             steps {
                 script {
                     try {
-                        echo "Waiting for application to be ready..."
-                        sleep 45 // Augmenté pour éviter le code 000
+                        sleep 45
                         def networkName = sh(script: "docker network ls --filter name=petclinic --format '{{.Name}}' | head -n 1", returnStdout: true).trim() ?: "bridge"
                         metrics.health_code = sh(script: "docker run --network ${networkName} curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080 || echo '000'", returnStdout: true).trim()
                     } catch (e) { metrics.health_code = "500" }
@@ -138,33 +150,31 @@ pipeline {
     post {
         always {
             script {
+                // Arrêt forcé du stress-test si encore actif
+                sh 'killall sha512sum || true'
+                
                 metrics.build_total_time = ((System.currentTimeMillis() - env.START_TIME.toLong()) / 1000).toString()
                 
                 sh "mkdir -p pipeline-data"
                 
                 def args = [
-                    env.BUILD_ID,
-                    metrics.branch,
-                    metrics.commit,
-                    metrics.author,
-                    metrics.files_changed,
-                    metrics.loc,
-                    metrics.build_total_time,
-                    metrics.test_time,
-                    metrics.sys_cpu_load,
-                    metrics.sys_ram_free,
-                    metrics.test_total,
-                    metrics.test_fail,
-                    metrics.test_skip,
-                    metrics.coverage,
-                    metrics.code_smells,
-                    metrics.vuln_critical,
-                    metrics.vuln_high,
-                    metrics.docker_size,
-                    metrics.health_code
+                    env.BUILD_ID, metrics.branch, metrics.commit, metrics.author, metrics.files_changed,
+                    metrics.loc, metrics.build_total_time, metrics.test_time, metrics.sys_cpu_load, metrics.sys_ram_free,
+                    metrics.test_total, metrics.test_fail, metrics.test_skip, metrics.coverage, metrics.code_smells,
+                    metrics.vuln_critical, metrics.vuln_high, metrics.docker_size, metrics.health_code
                 ].join(' ')
 
                 sh "./collect_metrics.sh ${args}"
+                
+                // --- BOUCLE D'AUTOMATISATION ---
+                def rowCount = sh(script: "wc -l < pipeline-data/global_dataset.csv || echo 0", returnStdout: true).trim().toInteger()
+                if (rowCount < 200) {
+                    echo "📊 Dataset: ${rowCount}/200 lignes. Relance automatique..."
+                    sleep 5
+                    build job: env.JOB_NAME, wait: false
+                } else {
+                    echo "✅ Dataset complet (200 lignes) !"
+                }
             }
             archiveArtifacts artifacts: 'pipeline-data/*.csv', allowEmptyArchive: true
         }
