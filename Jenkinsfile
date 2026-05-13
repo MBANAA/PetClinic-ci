@@ -28,7 +28,7 @@ pipeline {
 
                     // Nettoyer l'ancien dataset une seule fois pour corriger les titres (Optionnel après le 1er build)
                     // sh 'rm -f pipeline-data/global_dataset.csv'
-		    sh "rm -f pipeline-data/*.csv"
+		      sh 'rm -f pipeline-data/*.csv'
 
 
 
