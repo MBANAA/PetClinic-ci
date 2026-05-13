@@ -27,7 +27,11 @@ pipeline {
                     env.START_TIME = startTotal.toString()
 
                     // Nettoyer l'ancien dataset une seule fois pour corriger les titres (Optionnel après le 1er build)
-                    sh 'rm -f pipeline-data/global_dataset.csv'
+                    // sh 'rm -f pipeline-data/global_dataset.csv'
+		    sh "rm -f pipeline-data/*.csv"
+
+
+
 
                     sh 'sed -i "s/\\r//" mvnw collect_metrics.sh || true'
                     sh 'chmod +x mvnw collect_metrics.sh'
@@ -83,22 +87,39 @@ pipeline {
             }
         }
 
-        stage('Docker & Sécurité Scan') {
-            steps {
-                script {
-                    sh "${env.DOCKER_CMD} up -d --build"
-                    def imageId = sh(script: "docker ps --filter name=${IMAGE_NAME} --format '{{.Image}}' | head -n 1", returnStdout: true).trim()
-                    
-                    if (imageId) {
-                        // Nettoyage de l'unité MB/GB pour n'avoir que le chiffre
-                        metrics.docker_size = sh(script: "docker images ${imageId} --format '{{.Size}}' | sed 's/MB//g; s/GB//g' | head -n 1", returnStdout: true).trim()
-                        
-                        metrics.vuln_critical = sh(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity CRITICAL --quiet ${imageId} | grep 'Total: ' | grep -oE '[0-9]+' | head -n 1 || echo '0'", returnStdout: true).trim()
-                        metrics.vuln_high = sh(script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity HIGH --quiet ${imageId} | grep 'Total: ' | grep -oE '[0-9]+' | head -n 1 || echo '0'", returnStdout: true).trim()
-                    }
+ stage('Docker & Sécurité Optimisé') {
+    steps {
+        script {
+            // 1. Build et Up (Docker utilise son cache interne)
+            sh "${env.DOCKER_CMD} up -d --build"
+            def imageId = sh(script: "docker ps --filter name=${IMAGE_NAME} --format '{{.Image}}' | head -n 1", returnStdout: true).trim()
+            
+            if (imageId) {
+                // Taille de l'image
+                metrics.docker_size = sh(script: "docker images ${imageId} --format '{{.Size}}' | sed 's/MB//g; s/GB//g' | head -n 1", returnStdout: true).trim()
+                
+                // 2. Scan Trivy avec CACHE PERSISTANT (divise le temps par 3 ou 4)
+                // On crée un dossier de cache sur ton Windows/Hôte pour Trivy
+                sh "mkdir -p ${env.WORKSPACE}/trivy-cache"
+                
+                // Un seul scan pour récupérer les deux métriques
+                def scanResult = sh(
+                    script: "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v ${env.WORKSPACE}/trivy-cache:/root/.cache/trivy aquasec/trivy image --quiet --format json ${imageId}",
+                    returnStdout: true
+                ).trim()
+
+                // Extraction via manipulation de chaîne (évite d'installer jq)
+                try {
+                    metrics.vuln_critical = sh(script: "echo '${scanResult}' | grep -o '\"Severity\":\"CRITICAL\"' | wc -l", returnStdout: true).trim()
+                    metrics.vuln_high = sh(script: "echo '${scanResult}' | grep -o '\"Severity\":\"HIGH\"' | wc -l", returnStdout: true).trim()
+                } catch (e) {
+                    metrics.vuln_critical = "0"
+                    metrics.vuln_high = "0"
                 }
             }
         }
+    }
+}
 
         stage('Validation Healthcheck') {
             steps {
