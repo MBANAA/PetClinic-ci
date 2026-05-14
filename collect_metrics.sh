@@ -1,38 +1,11 @@
 #!/bin/bash
+CSV_FILE="pipeline-data/ultra_granular_dataset.csv"
+mkdir -p pipeline-data
 
-DATA_DIR="pipeline-data"
-CSV_FILE="$DATA_DIR/global_dataset.csv"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-
-mkdir -p "$DATA_DIR"
-
-# Capture des 19 arguments envoyés par Jenkins
-BUILD_ID=${1:-0}
-BRANCH=${2:-"unknown"}
-COMMIT=${3:-"none"}
-AUTHOR=${4:-"unknown"}
-FILES_CHANGED=${5:-0}
-LOC=${6:-0}
-BUILD_TIME=${7:-0}
-TEST_TIME=${8:-0}
-SYS_CPU=${9:-0}
-SYS_RAM=${10:-0}
-TEST_TOTAL=${11:-0}
-TEST_FAIL=${12:-0}
-TEST_SKIP=${13:-0}
-COVERAGE=${14:-0}
-SMELLS=${15:-0}
-VULN_CRIT=${16:-0}
-VULN_HIGH=${17:-0}
-DOCKER_SIZE=${18:-0}
-HEALTH=${19:-000}
-
-# Création de l'en-tête (20 colonnes incluant le timestamp)
+# Initialisation du Header complet
 if [ ! -f "$CSV_FILE" ]; then
-    echo "timestamp,build_id,branch,commit,author,files_changed,loc,build_time_sec,test_time_sec,sys_cpu_load,sys_ram_free_mb,tests_total,tests_failed,tests_skipped,coverage_pct,code_smells,vuln_critical,vuln_high,docker_size_mb,health_code" > "$CSV_FILE"
+    echo "timestamp,build_id,total_t,context_t,logic_t,owner_t,vet_t,visit_t,it_mysql_t,scan_os_t,scan_app_t,scan_conf_t,cpu_load,ram_usage,disk_io,unit_fail,owner_f,vet_f,visit_f,it_mysql_f,smells,vuln_os,vuln_app,vuln_conf,h_code" > "$CSV_FILE"
 fi
 
-# Injection de la donnée (Format CSV standard)
-echo "$TIMESTAMP,$BUILD_ID,$BRANCH,$COMMIT,$AUTHOR,$FILES_CHANGED,$LOC,$BUILD_TIME,$TEST_TIME,$SYS_CPU,$SYS_RAM,$TEST_TOTAL,$TEST_FAIL,$TEST_SKIP,$COVERAGE,$SMELLS,$VULN_CRIT,$VULN_HIGH,$DOCKER_SIZE,$HEALTH" >> "$CSV_FILE"
-
-echo "✅ AIOps Dataset mis à jour avec succès : Build #$BUILD_ID ($BRANCH) - Status: $HEALTH"
+TIMESTAMP=$(date "+%Y-%m-%d_%H-%M-%S")
+echo "$TIMESTAMP,$*" >> "$CSV_FILE"
