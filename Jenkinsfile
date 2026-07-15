@@ -3,9 +3,11 @@ pipeline {
     agent any
  
     environment {
-        TESTCONTAINERS_RYUK_DISABLED = 'true'
         IMAGE_NAME  = 'petclinic-app'
         DATASET_CSV = 'metrics_dataset.csv'
+        // TESTCONTAINERS_RYUK_DISABLED retiré volontairement :
+        // Ryuk nettoie les conteneurs orphelins après un test qui plante,
+        // ce qui évite une dérive de cpu_pct/ram_pct/disk_pct entre les runs.
     }
  
     stages {
@@ -33,7 +35,12 @@ pipeline {
                     sh "./mvnw test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                 }
                 script {
-                    env.F_UNIT = sh(script: "grep -l '<failure' target/surefire-reports/*.xml 2>/dev/null | wc -l", returnStdout: true).trim()
+                    // Compte failures + errors (les erreurs d'infra type
+                    // container qui ne démarre pas sont des <error>, pas des <failure>)
+                    env.F_UNIT = sh(script: """
+                        grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
+                    """, returnStdout: true).trim()
                 }
             }
         }
@@ -41,10 +48,18 @@ pipeline {
         stage('🧪 2b. Tests d\'Intégration') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    sh "./mvnw test -Dtest='*IntegrationTests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
+                    // Option A (par défaut) : on exclut PostgresIntegrationTests car
+                    // le déploiement réel tourne en profil MySQL uniquement.
+                    // Pour la réactiver (si vous gardez le service "postgres" dans
+                    // docker-compose.yml) remplacez la ligne ci-dessous par :
+                    // sh "./mvnw test -Dtest='*IntegrationTests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
+                    sh "./mvnw test -Dtest='*IntegrationTests,!PostgresIntegrationTests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                 }
                 script {
-                    env.F_IT = sh(script: "grep -l '<failure' target/surefire-reports/*.xml 2>/dev/null | wc -l", returnStdout: true).trim()
+                    env.F_IT = sh(script: """
+                        grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
+                    """, returnStdout: true).trim()
                 }
             }
         }
@@ -65,7 +80,11 @@ pipeline {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
                     script {
-                        sh "docker compose up -d"
+                        // On ne démarre que les services nécessaires au smoke test
+                        // (pas "postgres", inutile puisque l'app tourne en profil mysql).
+                        // --wait exploite le healthcheck déjà défini sur petclinic-mysql.
+                        sh "docker compose up -d --wait petclinic-mysql petclinic-app"
+ 
                         def httpCode = '000'
                         for (int i = 0; i < 10; i++) {
                             httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ || echo 000", returnStdout: true).trim()
@@ -73,6 +92,12 @@ pipeline {
                             sleep 3
                         }
                         env.H_CODE = httpCode
+ 
+                        if (httpCode != '200') {
+                            echo "⚠️ Code HTTP inattendu (${httpCode}). Logs de l'app :"
+                            sh "docker compose logs petclinic-app --tail 50 || true"
+                        }
+ 
                         sh "docker compose down -v || true"
                     }
                 }
@@ -92,8 +117,8 @@ pipeline {
                 }
  
                 def total_t = (System.currentTimeMillis() - env.START_P.toLong()) / 1000
+                def status  = currentBuild.currentResult ?: 'UNKNOWN'
  
-                // Ligne de métriques -> une ligne = une observation du dataset
                 def row = [
                     env.BUILD_ID,
                     total_t,
@@ -104,10 +129,11 @@ pipeline {
                     env.F_IT   ?: '0',
                     smells,
                     env.V_OS   ?: '0',
-                    env.H_CODE ?: '000'
+                    env.H_CODE ?: '000',
+                    status
                 ].join(',')
  
-                def header = 'build_id,duration_s,cpu_pct,ram_pct,disk_pct,fail_unit,fail_it,checkstyle_smells,vuln_high,http_code'
+                def header = 'build_id,duration_s,cpu_pct,ram_pct,disk_pct,fail_unit,fail_it,checkstyle_smells,vuln_high,http_code,build_status'
  
                 if (!fileExists(env.DATASET_CSV)) {
                     writeFile file: env.DATASET_CSV, text: header + '\n'
@@ -116,16 +142,17 @@ pipeline {
  
                 archiveArtifacts artifacts: "${env.DATASET_CSV}", allowEmptyArchive: true
  
-                // Optionnel : script externe si présent (ex: envoi vers une BDD ou un stockage central)
                 if (fileExists('collect_metrics.sh')) {
                     sh "chmod +x collect_metrics.sh && ./collect_metrics.sh ${row} || true"
                 }
  
-                echo "Build terminé. Dataset mis à jour : ${env.DATASET_CSV}"
+                echo "Build terminé (${status}). Dataset mis à jour : ${env.DATASET_CSV}"
             }
         }
         cleanup {
             sh "docker compose down -v || true"
+            sh "docker system prune -f --filter 'until=1h' || true"
         }
     }
 }
+ 
