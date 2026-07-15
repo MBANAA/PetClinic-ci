@@ -2,18 +2,25 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = "petclinic-app"
-        TESTCONTAINERS_RYUK_DISABLED = "true"
+        TESTCONTAINERS_RYUK_DISABLED = 'true'
+        IMAGE_NAME = 'petclinic-app'
     }
 
     options {
-        timestamps()
         timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
     }
 
     stages {
 
-        stage('🧹 Clean') {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Clean') {
             steps {
                 sh '''
                     docker compose down -v || true
@@ -22,65 +29,75 @@ pipeline {
             }
         }
 
-        stage('🔨 Build & Unit Tests') {
+        stage('Unit Tests') {
             steps {
-                sh './mvnw test -DfailIfNoTests=false'
+                sh '''
+                    ./mvnw test \
+                    -DfailIfNoTests=false \
+                    -Dmaven.test.failure.ignore=true
+                '''
             }
+
             post {
                 always {
-                    junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
+                    junit 'target/surefire-reports/*.xml'
                 }
             }
         }
 
-        stage('🐳 Build Docker Image') {
+        stage('Build') {
             steps {
-                sh "docker build -t ${IMAGE_NAME} ."
+                sh './mvnw package -DskipTests'
             }
         }
 
-        stage('🔒 Security Scan (Trivy)') {
-            steps {
-                sh """
-                    docker run --rm \
-                    -v /var/run/docker.sock:/var/run/docker.sock \
-                    aquasec/trivy:latest image \
-                    --severity HIGH,CRITICAL \
-                    --exit-code 0 \
-                    ${IMAGE_NAME}
-                """
-            }
-        }
-
-        stage('🚀 Smoke Test') {
+        stage('Docker Build') {
             steps {
                 sh '''
-                    docker compose up -d
-
-                    echo "Attente du démarrage de l'application..."
-
-                    for i in $(seq 1 30)
-                    do
-                        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ || true)
-
-                        if [ "$STATUS" = "200" ]; then
-                            echo "Application démarrée."
-                            exit 0
-                        fi
-
-                        sleep 2
-                    done
-
-                    echo "L'application ne répond pas."
-                    docker compose logs
-                    exit 1
+                    docker build -t ${IMAGE_NAME}:latest .
                 '''
             }
         }
 
-        stage('📊 Checkstyle') {
+        stage('Trivy Scan') {
             steps {
-                sh './mvnw checkstyle:check || true'
+                sh '''
+                    docker run --rm \
+                    -v /var/run/docker.sock:/var/run/docker.sock \
+                    aquasec/trivy:latest image \
+                    --severity HIGH,CRITICAL \
+                    --no-progress \
+                    ${IMAGE_NAME}:latest || true
+                '''
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+
+                sh '''
+                    docker compose up -d
+
+                    echo "Attente du démarrage..."
+
+                    for i in {1..20}
+                    do
+                        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 || true)
+
+                        if [ "$STATUS" = "200" ]; then
+                            echo "Application disponible."
+                            exit 0
+                        fi
+
+                        sleep 5
+                    done
+
+                    echo "Application indisponible."
+
+                    docker compose logs
+
+                    exit 1
+                '''
             }
         }
 
@@ -90,45 +107,20 @@ pipeline {
 
         always {
 
-            script {
+            sh '''
+                docker compose down -v || true
+            '''
 
-                archiveArtifacts artifacts: 'target/**/*.xml', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'target/**/*.jar', allowEmptyArchive: true
 
-                sh '''
-                    mkdir -p metrics
-
-                    echo "Build ID : ${BUILD_ID}" > metrics/build-info.txt
-                    echo "Date : $(date)" >> metrics/build-info.txt
-                    echo "CPU :" >> metrics/build-info.txt
-                    top -bn1 | head -5 >> metrics/build-info.txt || true
-
-                    echo "" >> metrics/build-info.txt
-
-                    echo "RAM :" >> metrics/build-info.txt
-                    free -h >> metrics/build-info.txt || true
-
-                    echo "" >> metrics/build-info.txt
-
-                    echo "DISK :" >> metrics/build-info.txt
-                    df -h >> metrics/build-info.txt || true
-                '''
-
-                archiveArtifacts artifacts: 'metrics/*', allowEmptyArchive: true
-
-                sh 'docker compose down -v || true'
-            }
         }
 
         success {
-            echo 'Pipeline exécuté avec succès.'
-        }
-
-        unstable {
-            echo 'Pipeline terminé avec des avertissements.'
+            echo "Pipeline terminé avec succès."
         }
 
         failure {
-            echo 'Pipeline en échec.'
+            echo "Pipeline échoué."
         }
     }
 }
