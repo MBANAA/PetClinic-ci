@@ -4,12 +4,12 @@ pipeline {
     environment {
         IMAGE_NAME  = 'petclinic-app'
         DATASET_CSV = 'metrics_dataset.csv'
-        
-        // 1. Désactivation de Ryuk pour éviter le blocage réseau (Connection refused)
         TESTCONTAINERS_RYUK_DISABLED = 'true'
-        
-        // 2. Force l'utilisation du socket local direct pour Testcontainers
-        DOCKER_HOST = 'unix:///var/run/docker.sock'
+        // DOCKER_HOST retiré : à ne réintroduire que si vous confirmez que le
+        // socket par défaut ne fonctionne pas sur votre agent (voir
+        // `ls -la /var/run/docker.sock` et `docker context ls` sur l'agent).
+        // Le forcer à l'aveugle peut casser Testcontainers si le chemin réel
+        // diffère (agent Jenkins lui-même conteneurisé, DinD, socket distant...).
     }
  
     stages {
@@ -17,22 +17,18 @@ pipeline {
             steps {
                 script {
                     env.START_P = System.currentTimeMillis().toString()
-                    
+ 
                     echo "📊 Collecte des ressources système de l'agent..."
-                    
-                    env.CPU = sh(script: """
-                        sar 1 3 | tail -1 | awk '{print 100 - \$NF}' 2>/dev/null || \
-                        top -bn3 -d1 | grep 'Cpu(s)' | awk '{sum+=\$8} END {print 100 - (sum/3)}' 2>/dev/null || \
-                        echo '10'
-                    """, returnStdout: true).trim()
-                    
-                    env.RAM = sh(script: """
-                        free | grep Mem | awk '{print \$3/\$2 * 100.0}' 2>/dev/null || echo '15'
-                    """, returnStdout: true).trim()
-                    
-                    env.DISK = sh(script: """
-                        df / | tail -1 | awk '{print \$5}' | sed 's/%//' 2>/dev/null || echo '20'
-                    """, returnStdout: true).trim()
+ 
+                    // Simplifié : un seul relevé fiable, sans cascade de fallback
+                    // qui masquait les vrais échecs (cpu_pct=0 du run précédent).
+                    env.CPU = sh(script: '''
+                        top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}'
+                    ''', returnStdout: true).trim()
+                    if (!env.CPU?.trim() || env.CPU == '') { env.CPU = '0' }
+ 
+                    env.RAM = sh(script: "free | grep Mem | awk '{print \$3/\$2 * 100.0}'", returnStdout: true).trim()
+                    env.DISK = sh(script: "df / | tail -1 | awk '{print \$5}' | sed 's/%//'", returnStdout: true).trim()
  
                     sh "docker compose down -v || true"
                     sh "./mvnw -B clean"
@@ -47,17 +43,23 @@ pipeline {
         stage('🧪 2a. Tests Unitaires') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    sh "./mvnw test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
+                    // CORRECTIF CRITIQUE : on exclut explicitement *IntegrationTests
+                    // car "MySqlIntegrationTests", "PostgresIntegrationTests", etc.
+                    // se terminent aussi par "Tests" et étaient donc capturés ici,
+                    // provoquant une double exécution des tests d'intégration
+                    // (une fois ici par erreur, une fois dans le stage 2b) et
+                    // doublant le temps perdu sur les timeouts de conteneur.
+                    sh "./mvnw test -Dtest='*Tests,!*IntegrationTests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                 }
                 script {
                     env.F_UNIT = sh(script: """
                         grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
                     """, returnStdout: true).trim()
-                    
+ 
                     env.S_UNIT = sh(script: """
                         grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
                     """, returnStdout: true).trim()
                 }
             }
@@ -66,26 +68,27 @@ pipeline {
         stage('🧪 2b. Tests d\'Intégration') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    // Augmentation du timeout à 300s (5min) pour compenser la lenteur de la machine
+                    // Timeout ramené à une valeur raisonnable (60s) : un timeout
+                    // long ne "corrige" pas un problème de connexion Docker,
+                    // il fait juste perdre du temps à chaque tentative ratée.
                     sh """
                         ./mvnw test \
                         -Dtest='*IntegrationTests,!PostgresIntegrationTests' \
                         -Dspring.profiles.active=mysql \
                         -DfailIfNoTests=false \
                         -Dmaven.test.failure.ignore=true \
-                        -Dtestcontainers.ryuk.disabled=true \
-                        -Dtestcontainers.container.startup.timeout=300
+                        -Dtestcontainers.container.startup.timeout=60
                     """
                 }
                 script {
                     env.F_IT = sh(script: """
                         grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
                     """, returnStdout: true).trim()
-                    
+ 
                     env.S_IT = sh(script: """
                         grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
                     """, returnStdout: true).trim()
                 }
             }
@@ -98,7 +101,7 @@ pipeline {
                 }
                 script {
                     def trivyCmd = "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --format json --quiet ${IMAGE_NAME}"
-                    env.V_OS = sh(script: "${trivyCmd} 2>/dev/null | grep -o '\"VulnerabilityID\"' | wc -l || echo '0'", returnStdout: true).trim()
+                    env.V_OS = sh(script: "${trivyCmd} 2>/dev/null | grep -o '\"VulnerabilityID\"' | wc -l", returnStdout: true).trim()
                 }
             }
         }
@@ -112,17 +115,19 @@ pipeline {
                         def httpCode = '000'
                         for (int i = 0; i < 10; i++) {
                             httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ || echo 000", returnStdout: true).trim()
-                            
-                            if (httpCode == '200' || httpCode == '302' || httpCode == '403') { 
-                                echo "🎯 Smoke Test réussi avec succès ! L'application répond avec le code : ${httpCode}"
-                                break 
+                            // 403 est accepté comme "app up" pour ne pas bloquer le pipeline,
+                            // mais reste enregistré tel quel dans le CSV (pas de 200 forcé) :
+                            // le vrai statut HTTP est le signal, pas masqué.
+                            if (httpCode == '200' || httpCode == '302' || httpCode == '403') {
+                                echo "🎯 Smoke test : l'app répond (HTTP ${httpCode})"
+                                break
                             }
                             sleep 3
                         }
                         env.H_CODE = httpCode
  
                         if (httpCode == '000') {
-                            echo "⚠️ L'application n'a pas répondu à temps. Extraction des logs :"
+                            echo "⚠️ Aucune réponse. Logs de l'app :"
                             sh "docker compose logs petclinic-app --tail 50 || true"
                         }
  
@@ -176,7 +181,7 @@ pipeline {
                     sh "chmod +x collect_metrics.sh && ./collect_metrics.sh ${row} || true"
                 }
  
-                echo "✅ Run enregistré avec succès. Statut : ${status}. Entrée dataset : ${row}"
+                echo "✅ Run enregistré. Statut : ${status}. Entrée : ${row}"
             }
         }
         cleanup {
