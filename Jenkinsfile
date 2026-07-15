@@ -58,7 +58,7 @@ pipeline {
         stage('🧪 2b. Tests d\'Intégration') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    // Activation explicite du profil mysql pour s'aligner avec l'infra cible
+                    // Activation du profil mysql pour s'aligner avec l'infra cible
                     sh "./mvnw test -Dtest='*IntegrationTests,!PostgresIntegrationTests' -Dspring.profiles.active=mysql -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                 }
                 script {
