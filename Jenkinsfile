@@ -5,10 +5,10 @@ pipeline {
         IMAGE_NAME  = 'petclinic-app'
         DATASET_CSV = 'metrics_dataset.csv'
         
-        // 1. DESACTIVATION DE RYUK : Indispensable pour éviter le blocage et les "Connection refused" dans Jenkins
+        // 1. Désactivation de Ryuk pour éviter le blocage réseau (Connection refused)
         TESTCONTAINERS_RYUK_DISABLED = 'true'
         
-        // 2. FORCE TESTCONTAINERS A UTILISER LE SOCKET DIRECT : Évite les résolutions IP hasardeuses (172.17.0.1)
+        // 2. Force l'utilisation du socket local direct pour Testcontainers
         DOCKER_HOST = 'unix:///var/run/docker.sock'
     }
  
@@ -66,14 +66,15 @@ pipeline {
         stage('🧪 2b. Tests d\'Intégration') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    // Passage des variables d'environnement Testcontainers directement dans Maven pour forcer la prise en compte
+                    // Augmentation du timeout à 300s (5min) pour compenser la lenteur de la machine
                     sh """
                         ./mvnw test \
                         -Dtest='*IntegrationTests,!PostgresIntegrationTests' \
                         -Dspring.profiles.active=mysql \
                         -DfailIfNoTests=false \
                         -Dmaven.test.failure.ignore=true \
-                        -Dtestcontainers.ryuk.disabled=true
+                        -Dtestcontainers.ryuk.disabled=true \
+                        -Dtestcontainers.container.startup.timeout=300
                     """
                 }
                 script {
