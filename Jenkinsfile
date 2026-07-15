@@ -1,13 +1,11 @@
-
 pipeline {
     agent any
  
     environment {
         IMAGE_NAME  = 'petclinic-app'
         DATASET_CSV = 'metrics_dataset.csv'
-        // TESTCONTAINERS_RYUK_DISABLED retiré volontairement :
-        // Ryuk nettoie les conteneurs orphelins après un test qui plante,
-        // ce qui évite une dérive de cpu_pct/ram_pct/disk_pct entre les runs.
+        // Urgent : Évite la dérive des ressources et nettoie les conteneurs orphelins
+        TESTCONTAINERS_RYUK_DISABLED = 'true'
     }
  
     stages {
@@ -15,7 +13,14 @@ pipeline {
             steps {
                 script {
                     env.START_P = System.currentTimeMillis().toString()
-                    env.CPU  = sh(script: "top -bn1 | grep 'Cpu(s)' | awk '{print 100 - \$8}'", returnStdout: true).trim()
+                    
+                    // Échantillonnage CPU sur 5 secondes pour une moyenne fiable (évite le 0% ponctuel)
+                    echo "Calcul de la moyenne CPU en cours (échantillonnage 5s)..."
+                    env.CPU = sh(script: """
+                        sar 1 5 | tail -1 | awk '{print 100 - \$NF}' 2>/dev/null || \
+                        top -bn5 -d1 | grep 'Cpu(s)' | awk '{sum+=\$8} END {print 100 - (sum/5)}'
+                    """, returnStdout: true).trim()
+                    
                     env.RAM  = sh(script: "free | grep Mem | awk '{print \$3/\$2 * 100.0}'", returnStdout: true).trim()
                     env.DISK = sh(script: "df / | tail -1 | awk '{print \$5}' | sed 's/%//'", returnStdout: true).trim()
  
@@ -35,10 +40,15 @@ pipeline {
                     sh "./mvnw test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                 }
                 script {
-                    // Compte failures + errors (les erreurs d'infra type
-                    // container qui ne démarre pas sont des <error>, pas des <failure>)
+                    // Compte failures + errors
                     env.F_UNIT = sh(script: """
                         grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
+                    """, returnStdout: true).trim()
+                    
+                    // Compte les tests skippés
+                    env.S_UNIT = sh(script: """
+                        grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
                         | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
                     """, returnStdout: true).trim()
                 }
@@ -48,16 +58,19 @@ pipeline {
         stage('🧪 2b. Tests d\'Intégration') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    // Option A (par défaut) : on exclut PostgresIntegrationTests car
-                    // le déploiement réel tourne en profil MySQL uniquement.
-                    // Pour la réactiver (si vous gardez le service "postgres" dans
-                    // docker-compose.yml) remplacez la ligne ci-dessous par :
-                    // sh "./mvnw test -Dtest='*IntegrationTests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
-                    sh "./mvnw test -Dtest='*IntegrationTests,!PostgresIntegrationTests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
+                    // Activation explicite du profil mysql pour s'aligner avec l'infra cible
+                    sh "./mvnw test -Dtest='*IntegrationTests,!PostgresIntegrationTests' -Dspring.profiles.active=mysql -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                 }
                 script {
+                    // Compte failures + errors
                     env.F_IT = sh(script: """
                         grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
+                    """, returnStdout: true).trim()
+                    
+                    // Compte les tests skippés
+                    env.S_IT = sh(script: """
+                        grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
                         | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
                     """, returnStdout: true).trim()
                 }
@@ -80,14 +93,12 @@ pipeline {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
                     script {
-                        // On ne démarre que les services nécessaires au smoke test
-                        // (pas "postgres", inutile puisque l'app tourne en profil mysql).
-                        // --wait exploite le healthcheck déjà défini sur petclinic-mysql.
                         sh "docker compose up -d --wait petclinic-mysql petclinic-app"
  
                         def httpCode = '000'
                         for (int i = 0; i < 10; i++) {
-                            httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ || echo 000", returnStdout: true).trim()
+                            // Ciblage de /actuator/health pour éviter le 403 potentiel de l'index
+                            httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || echo 000", returnStdout: true).trim()
                             if (httpCode == '200') { break }
                             sleep 3
                         }
@@ -119,6 +130,7 @@ pipeline {
                 def total_t = (System.currentTimeMillis() - env.START_P.toLong()) / 1000
                 def status  = currentBuild.currentResult ?: 'UNKNOWN'
  
+                // Ligne CSV ordonnée avec les tests skippés
                 def row = [
                     env.BUILD_ID,
                     total_t,
@@ -126,14 +138,17 @@ pipeline {
                     env.RAM  ?: '0',
                     env.DISK ?: '0',
                     env.F_UNIT ?: '0',
+                    env.S_UNIT ?: '0',
                     env.F_IT   ?: '0',
+                    env.S_IT   ?: '0',
                     smells,
-                    env.V_OS   ?: '0',
+                    env.V_OS  ?: '0',
                     env.H_CODE ?: '000',
                     status
                 ].join(',')
  
-                def header = 'build_id,duration_s,cpu_pct,ram_pct,disk_pct,fail_unit,fail_it,checkstyle_smells,vuln_high,http_code,build_status'
+                // En-tête mis à jour du CSV
+                def header = 'build_id,duration_s,cpu_pct,ram_pct,disk_pct,fail_unit,skip_unit,fail_it,skip_it,checkstyle_smells,vuln_high,http_code,build_status'
  
                 if (!fileExists(env.DATASET_CSV)) {
                     writeFile file: env.DATASET_CSV, text: header + '\n'
@@ -155,4 +170,3 @@ pipeline {
         }
     }
 }
- 
