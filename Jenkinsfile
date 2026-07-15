@@ -2,61 +2,59 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = "petclinic-app:${BUILD_NUMBER}"
+        IMAGE_NAME = "petclinic-app"
         TESTCONTAINERS_RYUK_DISABLED = "true"
+    }
 
-        F_UNIT = "0"
-        F_IT = "0"
-        V_OS = "0"
+    options {
+        timestamps()
+        ansiColor('xterm')
+        timeout(time: 20, unit: 'MINUTES')
     }
 
     stages {
 
-        stage('Préparation') {
+        stage('Clean Workspace') {
             steps {
-                script {
-                    env.START = System.currentTimeMillis()
+                sh '''
+                    docker compose down -v || true
+                    ./mvnw clean
+                '''
+            }
+        }
 
-                    sh '''
-                    docker compose down || true
-                    chmod +x mvnw
-                    '''
+        stage('Build') {
+            steps {
+                sh './mvnw compile'
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh './mvnw test -DfailIfNoTests=false'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/*.xml'
                 }
             }
         }
 
-        stage('Compilation & Tests') {
-            parallel {
-
-                stage('Tests Unitaires') {
-                    steps {
-                        sh "./mvnw test -Dtest=*Tests -DfailIfNoTests=false"
-                    }
-                }
-
-                stage('Tests Intégration') {
-                    steps {
-                        sh "./mvnw test -Dtest=*IntegrationTests -DfailIfNoTests=false"
-                    }
-                }
-            }
-        }
-
-        stage('Build Docker') {
+        stage('Build Docker Image') {
             steps {
                 sh "docker build -t ${IMAGE_NAME} ."
             }
         }
 
-        stage('Analyse Trivy') {
+        stage('Security Scan') {
             steps {
                 sh """
                 docker run --rm \
-                  -v /var/run/docker.sock:/var/run/docker.sock \
-                  -v \$HOME/.cache/trivy:/root/.cache \
-                  aquasec/trivy image \
-                  --severity HIGH,CRITICAL \
-                  ${IMAGE_NAME}
+                    -v /var/run/docker.sock:/var/run/docker.sock \
+                    aquasec/trivy:latest image \
+                    --severity HIGH,CRITICAL \
+                    --exit-code 0 \
+                    ${IMAGE_NAME}
                 """
             }
         }
@@ -64,18 +62,23 @@ pipeline {
         stage('Smoke Test') {
             steps {
                 sh '''
-                docker compose up -d
+                    docker compose up -d
 
-                for i in {1..30}
-                do
-                    if curl -fs http://localhost:8080 > /dev/null
-                    then
-                        exit 0
-                    fi
-                    sleep 2
-                done
+                    echo "Waiting application..."
 
-                exit 1
+                    for i in {1..30}; do
+                        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ || true)
+
+                        if [ "$STATUS" = "200" ]; then
+                            echo "Application started."
+                            exit 0
+                        fi
+
+                        sleep 5
+                    done
+
+                    echo "Application failed."
+                    exit 1
                 '''
             }
         }
@@ -86,25 +89,24 @@ pipeline {
 
         always {
 
-            junit 'target/surefire-reports/*.xml'
+            sh 'docker compose down -v || true'
 
-            sh 'docker compose down || true'
+            sh './mvnw checkstyle:check || true'
 
-            script {
+            archiveArtifacts artifacts: 'target/**/*.xml', allowEmptyArchive: true
 
-                def duration = (System.currentTimeMillis()-env.START.toLong())/1000
+        }
 
-                echo """
-==========================
-Pipeline terminé
+        success {
+            echo "Pipeline terminé avec succès."
+        }
 
-Durée : ${duration} sec
+        unstable {
+            echo "Pipeline terminé avec des avertissements."
+        }
 
-Image : ${IMAGE_NAME}
-
-==========================
-"""
-            }
+        failure {
+            echo "Pipeline échoué."
         }
     }
 }
