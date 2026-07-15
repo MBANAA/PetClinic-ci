@@ -4,8 +4,12 @@ pipeline {
     environment {
         IMAGE_NAME  = 'petclinic-app'
         DATASET_CSV = 'metrics_dataset.csv'
-        // Ryuk gère le nettoyage automatique des conteneurs de test en tâche de fond
-        TESTCONTAINERS_RYUK_DISABLED = 'false'
+        
+        // 1. DESACTIVATION DE RYUK : Indispensable pour éviter le blocage et les "Connection refused" dans Jenkins
+        TESTCONTAINERS_RYUK_DISABLED = 'true'
+        
+        // 2. FORCE TESTCONTAINERS A UTILISER LE SOCKET DIRECT : Évite les résolutions IP hasardeuses (172.17.0.1)
+        DOCKER_HOST = 'unix:///var/run/docker.sock'
     }
  
     stages {
@@ -16,7 +20,6 @@ pipeline {
                     
                     echo "📊 Collecte des ressources système de l'agent..."
                     
-                    // Échantillonnage CPU sur 3 secondes pour un compromis idéal vitesse/précision
                     env.CPU = sh(script: """
                         sar 1 3 | tail -1 | awk '{print 100 - \$NF}' 2>/dev/null || \
                         top -bn3 -d1 | grep 'Cpu(s)' | awk '{sum+=\$8} END {print 100 - (sum/3)}' 2>/dev/null || \
@@ -31,7 +34,6 @@ pipeline {
                         df / | tail -1 | awk '{print \$5}' | sed 's/%//' 2>/dev/null || echo '20'
                     """, returnStdout: true).trim()
  
-                    // Nettoyage initial préventif
                     sh "docker compose down -v || true"
                     sh "./mvnw -B clean"
  
@@ -48,13 +50,11 @@ pipeline {
                     sh "./mvnw test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                 }
                 script {
-                    // Extraction des échecs (failures + errors)
                     env.F_UNIT = sh(script: """
                         grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
                         | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
                     """, returnStdout: true).trim()
                     
-                    // Extraction des tests skippés
                     env.S_UNIT = sh(script: """
                         grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
                         | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
@@ -66,17 +66,22 @@ pipeline {
         stage('🧪 2b. Tests d\'Intégration') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    // Profil MySQL activé pour correspondre à PetClinic
-                    sh "./mvnw test -Dtest='*IntegrationTests,!PostgresIntegrationTests' -Dspring.profiles.active=mysql -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
+                    // Passage des variables d'environnement Testcontainers directement dans Maven pour forcer la prise en compte
+                    sh """
+                        ./mvnw test \
+                        -Dtest='*IntegrationTests,!PostgresIntegrationTests' \
+                        -Dspring.profiles.active=mysql \
+                        -DfailIfNoTests=false \
+                        -Dmaven.test.failure.ignore=true \
+                        -Dtestcontainers.ryuk.disabled=true
+                    """
                 }
                 script {
-                    // Extraction des échecs d'intégration
                     env.F_IT = sh(script: """
                         grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
                         | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
                     """, returnStdout: true).trim()
                     
-                    // Extraction des tests d'intégration skippés
                     env.S_IT = sh(script: """
                         grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
                         | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
@@ -101,15 +106,12 @@ pipeline {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
                     script {
-                        // Lancement des conteneurs avec attente de leur état "healthy"
                         sh "docker compose up -d --wait petclinic-mysql petclinic-app"
  
                         def httpCode = '000'
-                        // Boucle de vérification de l'état de l'application (10 essais max)
                         for (int i = 0; i < 10; i++) {
                             httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ || echo 000", returnStdout: true).trim()
                             
-                            // 200, 302 (redirection vers login) ou 403 (sécurisé) confirment que Spring Boot écoute et tourne !
                             if (httpCode == '200' || httpCode == '302' || httpCode == '403') { 
                                 echo "🎯 Smoke Test réussi avec succès ! L'application répond avec le code : ${httpCode}"
                                 break 
@@ -123,7 +125,6 @@ pipeline {
                             sh "docker compose logs petclinic-app --tail 50 || true"
                         }
  
-                        // Nettoyage immédiat des conteneurs du Smoke Test
                         sh "docker compose down -v || true"
                     }
                 }
@@ -134,10 +135,8 @@ pipeline {
     post {
         always {
             script {
-                // Enregistrement des rapports de tests JUnit dans Jenkins
                 junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
  
-                // Analyse Checkstyle (ne fait jamais échouer le pipeline)
                 sh "./mvnw checkstyle:check || true"
                 def smells = '0'
                 if (fileExists('target/checkstyle-result.xml')) {
@@ -147,7 +146,6 @@ pipeline {
                 def total_t = (System.currentTimeMillis() - env.START_P.toLong()) / 1000
                 def status  = currentBuild.currentResult ?: 'UNKNOWN'
  
-                // Formatage de la ligne de données pour notre dataset
                 def row = [
                     env.BUILD_ID,
                     total_t,
@@ -164,7 +162,6 @@ pipeline {
                     status
                 ].join(',')
  
-                // En-tête du fichier CSV
                 def header = 'build_id,duration_s,cpu_pct,ram_pct,disk_pct,fail_unit,skip_unit,fail_it,skip_it,checkstyle_smells,vuln_high,http_code,build_status'
  
                 if (!fileExists(env.DATASET_CSV)) {
@@ -172,7 +169,6 @@ pipeline {
                 }
                 sh "echo '${row}' >> ${env.DATASET_CSV}"
  
-                // Sauvegarde du dataset dans les artefacts Jenkins
                 archiveArtifacts artifacts: "${env.DATASET_CSV}", allowEmptyArchive: true
  
                 if (fileExists('collect_metrics.sh')) {
@@ -183,7 +179,6 @@ pipeline {
             }
         }
         cleanup {
-            // Nettoyage final pour libérer de l'espace sur l'agent
             sh "docker compose down -v || true"
             sh "docker system prune -f --filter 'until=1h' || true"
         }
