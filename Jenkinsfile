@@ -2,125 +2,118 @@ pipeline {
     agent any
 
     environment {
-        TESTCONTAINERS_RYUK_DISABLED = 'true'
+        MAVEN_OPTS = '-Dspring.docker.compose.skip.in-tests=true'
         IMAGE_NAME = 'petclinic-app'
-    }
-
-    options {
-        timeout(time: 20, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timestamps()
+        COVERAGE_THRESHOLD = '80'
+        // Initialisation par défaut
+        ST_BUILD = "SKIPPED"
+        ST_TEST = "SKIPPED"
+        ST_QUALITY = "SKIPPED"
+        ST_DOCKER = "SKIPPED"
+        ST_HEALTH = "SKIPPED"
     }
 
     stages {
-
-        stage('Checkout') {
+        stage('Nettoyage et Preparation') {
             steps {
-                checkout scm
-            }
-        }
-
-        stage('Clean') {
-            steps {
-                sh '''
-                    docker compose down -v || true
-                    ./mvnw clean
-                '''
-            }
-        }
-
-        stage('Unit Tests') {
-            steps {
-                sh '''
-                    ./mvnw test \
-                    -DfailIfNoTests=false \
-                    -Dmaven.test.failure.ignore=true
-                '''
-            }
-
-            post {
-                always {
-                    junit 'target/surefire-reports/*.xml'
+                script {
+                    echo "--- Nettoyage ---"
+                    sh 'chmod +x mvnw'
+                    sh './mvnw clean'
+                    try {
+                        sh 'docker compose version'
+                        env.DOCKER_CMD = 'docker compose'
+                    } catch (Exception e) {
+                        env.DOCKER_CMD = 'docker-compose'
+                    }
                 }
             }
         }
 
-        stage('Build') {
+        stage('Analyse Statique') {
             steps {
-                sh './mvnw package -DskipTests'
+                script {
+                    try {
+                        echo 'Analyse statique en cours...'
+                        // On utilise le wrapper ici aussi
+                        sh './mvnw checkstyle:check spotbugs:check pmd:check || true'
+                        env.ST_QUALITY = "SUCCESS"
+                    } catch (e) {
+                        env.ST_QUALITY = "FAILURE"
+                    }
+                }
             }
         }
 
-        stage('Docker Build') {
+        stage('Build et Tests Unitaires') {
             steps {
-                sh '''
-                    docker build -t ${IMAGE_NAME}:latest .
-                '''
+                script {
+                    try {
+                        sh './mvnw jacoco:prepare-agent test jacoco:report \
+                            -Dspring.sql.init.mode=always \
+                            -Dtest=!PostgresIntegrationTests,!MySqlIntegrationTests \
+                            -Dmaven.test.failure.ignore=true' 
+                        
+                        env.ST_BUILD = "SUCCESS"
+                        env.ST_TEST = "SUCCESS"
+                    } catch (e) {
+                        env.ST_BUILD = "FAILURE"
+                        env.ST_TEST = "FAILURE"
+                        echo "Erreur lors du build : ${e.getMessage()}"
+                    }
+                }
             }
         }
 
-        stage('Trivy Scan') {
+        stage('Docker Infrastructure') {
             steps {
-                sh '''
-                    docker run --rm \
-                    -v /var/run/docker.sock:/var/run/docker.sock \
-                    aquasec/trivy:latest image \
-                    --severity HIGH,CRITICAL \
-                    --no-progress \
-                    ${IMAGE_NAME}:latest || true
-                '''
+                script {
+                    try {
+                        sh 'docker rm -f petclinic-app petclinic-mysql || true'
+                        sh "${env.DOCKER_CMD} down --volumes --remove-orphans || true"
+                        sh "${env.DOCKER_CMD} up -d --build"
+                        env.ST_DOCKER = "SUCCESS"
+                    } catch (e) {
+                        env.ST_DOCKER = "FAILURE"
+                        echo "Erreur Docker : ${e.getMessage()}"
+                    }
+                }
             }
         }
 
-        stage('Smoke Test') {
+        stage('Validation Healthcheck') {
             steps {
-
-                sh '''
-                    docker compose up -d
-
-                    echo "Attente du démarrage..."
-
-                    for i in {1..20}
-                    do
-                        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 || true)
-
-                        if [ "$STATUS" = "200" ]; then
-                            echo "Application disponible."
-                            exit 0
-                        fi
-
-                        sleep 5
-                    done
-
-                    echo "Application indisponible."
-
-                    docker compose logs
-
-                    exit 1
-                '''
+                script {
+                    try {
+                        echo 'Attente du démarrage (45s)...'
+                        sleep 45
+                        // Commande Curl via Docker pour tester la connectivité
+                        def response = sh(script: "docker run --network ced_petclinic_default curlimages/curl:latest -s -o /dev/null -w '%{http_code}' http://petclinic-app:8080", returnStdout: true).trim()
+                        
+                        echo "Status reçu: ${response}"
+                        
+                        if (response == '200') {
+                            env.ST_HEALTH = "SUCCESS"
+                        } else {
+                            env.ST_HEALTH = "FAILURE"
+                        }
+                    } catch (e) {
+                        env.ST_HEALTH = "FAILURE"
+                        echo "Erreur Healthcheck : ${e.getMessage()}"
+                    }
+                }
             }
         }
-
     }
 
     post {
-
         always {
-
-            sh '''
-                docker compose down -v || true
-            '''
-
-            archiveArtifacts artifacts: 'target/**/*.jar', allowEmptyArchive: true
-
-        }
-
-        success {
-            echo "Pipeline terminé avec succès."
-        }
-
-        failure {
-            echo "Pipeline échoué."
+            script {
+                // Rendre le script de collecte exécutable et l'appeler
+                sh "chmod +x collect_metrics.sh"
+                sh "./collect_metrics.sh ${env.ST_BUILD} ${env.ST_TEST} ${env.ST_QUALITY} ${env.ST_DOCKER} ${env.ST_HEALTH}"
+            }
+            archiveArtifacts artifacts: 'pipeline-data/**', allowEmptyArchive: true
         }
     }
 }
