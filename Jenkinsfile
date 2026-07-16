@@ -1,14 +1,22 @@
 pipeline {
     agent any
- 
+ 	 
+
+triggers {
+        cron('H * * * *') 
+    }
+
+
     environment {
         IMAGE_NAME  = 'petclinic-app'
         DATASET_CSV = 'metrics_dataset.csv'
         
-        // --- CORRECTIFS RÉSEAU TESTCONTAINERS ---
+        // --- CORRECTIFS RÉSEAU & TESTCONTAINERS ULTRA-ROBUSTES ---
         TESTCONTAINERS_RYUK_DISABLED = 'true'
         DOCKER_HOST = 'unix:///var/run/docker.sock'
-        TESTCONTAINERS_HOST_IP = '127.0.0.1' 
+        TESTCONTAINERS_HOST_IP = '127.0.0.1'
+        // Permet d'indiquer à Testcontainers de réutiliser les conteneurs si nécessaire
+        TESTCONTAINERS_REUSE_ENABLE = 'true'
     }
  
     stages {
@@ -71,24 +79,26 @@ pipeline {
         stage('🧪 2b. Tests d\'Intégration') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                    // Ajout des options de tolérance réseau pour Testcontainers
                     sh """
                         ./mvnw test \
                         -Dtest='*IntegrationTests,!PostgresIntegrationTests' \
                         -Dspring.profiles.active=mysql \
                         -DfailIfNoTests=false \
                         -Dmaven.test.failure.ignore=true \
-                        -Dtestcontainers.container.startup.timeout=300 \
+                        -Dtestcontainers.container.startup.timeout=240 \
                         -Dtestcontainers.use.host.network=true
                     """
                 }
                 script {
+                    // Utilisation d'un joker générique plus robuste pour éviter le plantage du script de parsing
                     env.F_IT = sh(script: """
-                        grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
+                        grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*IntegrationTests.xml target/surefire-reports/*MySql*.xml 2>/dev/null \
                         | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
                     """, returnStdout: true).trim()
                     
                     env.S_IT = sh(script: """
-                        grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
+                        grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*IntegrationTests.xml target/surefire-reports/*MySql*.xml 2>/dev/null \
                         | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
                     """, returnStdout: true).trim()
                 }
@@ -114,9 +124,10 @@ pipeline {
                         sh "docker compose up -d --wait petclinic-mysql petclinic-app"
  
                         def httpCode = '000'
-                        for (int i = 0; i < 10; i++) {
+                        for (int i = 0; i < 15; i++) { // Augmenté à 15 essais (45s max)
                             httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ || echo 000", returnStdout: true).trim()
                             
+                            // 403 est un code valide (l'application répond mais refuse l'accès sans auth)
                             if (httpCode == '200' || httpCode == '302' || httpCode == '403') { 
                                 echo "🎯 Smoke Test réussi ! L'application répond avec le code : ${httpCode}"
                                 break 
@@ -143,7 +154,7 @@ pipeline {
                 // 1. Enregistrement des rapports de tests pour l'interface Jenkins
                 junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
  
-                // 2. Calcul des violations Checkstyle (Sécurisé pour ne pas bloquer le run)
+                // 2. Calcul des violations Checkstyle (FailOnViolation désactivé pour ne pas casser le script)
                 sh "./mvnw checkstyle:check -Dcheckstyle.failOnViolation=false || true"
                 def smells = 0
                 if (fileExists('target/checkstyle-result.xml')) {
@@ -159,7 +170,10 @@ pipeline {
                 // --- ALGORITHME D'ÉQUILIBRAGE DU STATUT (DATASET & JENKINS) ---
                 def finalStatus = 'SUCCESS'
                 
-                if (httpCode == '000' || httpCode == '500') {
+                // Un code 403 / 302 / 200 indique que l'application est en vie
+                def appIsUp = (httpCode == '200' || httpCode == '302' || httpCode == '403')
+                
+                if (!appIsUp) {
                     finalStatus = 'FAILURE'
                 } else if (failUnit > 5 || failIt > 5) {
                     finalStatus = 'FAILURE'
@@ -169,7 +183,7 @@ pipeline {
                     finalStatus = 'SUCCESS'
                 }
  
-                // Alignement du statut du build dans Jenkins
+                // Alignement de l'interface Jenkins avec notre statut métier calculé
                 if (finalStatus == 'FAILURE') {
                     currentBuild.result = 'FAILURE'
                 } else if (finalStatus == 'UNSTABLE') {
@@ -178,7 +192,7 @@ pipeline {
                     currentBuild.result = 'SUCCESS'
                 }
  
-                // 4. Structuration et écriture dans le CSV
+                // 4. Structuration de la ligne de données
                 def total_t = (System.currentTimeMillis() - env.START_P.toLong()) / 1000
                 def row = [
                     env.BUILD_ID,
@@ -211,7 +225,7 @@ pipeline {
                     sh "chmod +x collect_metrics.sh && ./collect_metrics.sh ${row} || true"
                 }
  
-                echo "✅ Run enregistré avec succès. Statut : ${finalStatus}. Métriques : ${row}"
+                echo "✅ Run enregistré avec succès. Statut assigné : ${finalStatus}. Métriques : ${row}"
             }
         }
         cleanup {
