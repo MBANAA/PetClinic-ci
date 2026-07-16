@@ -1,11 +1,14 @@
-
 pipeline {
     agent any
  
     environment {
         IMAGE_NAME  = 'petclinic-app'
         DATASET_CSV = 'metrics_dataset.csv'
+        
+        // --- CORRECTIFS RÉSEAU TESTCONTAINERS ---
         TESTCONTAINERS_RYUK_DISABLED = 'true'
+        DOCKER_HOST = 'unix:///var/run/docker.sock'
+        TESTCONTAINERS_HOST_IP = '127.0.0.1' 
     }
  
     stages {
@@ -13,14 +16,29 @@ pipeline {
             steps {
                 script {
                     env.START_P = System.currentTimeMillis().toString()
- 
-                    env.CPU = sh(script: '''
-                        top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}'
-                    ''', returnStdout: true).trim()
-                    if (!env.CPU?.trim() || env.CPU == '') { env.CPU = '0' }
- 
-                    env.RAM = sh(script: "free | grep Mem | awk '{print \$3/\$2 * 100.0}'", returnStdout: true).trim()
-                    env.DISK = sh(script: "df / | tail -1 | awk '{print \$5}' | sed 's/%//'", returnStdout: true).trim()
+                    
+                    echo "📊 Collecte des métriques Git du commit..."
+                    // Extraction du nombre de lignes ajoutées et supprimées dans le commit actuel
+                    def gitDiff = sh(script: "git diff --shortstat HEAD~1 HEAD 2>/dev/null || echo '0 files changed, 0 insertions, 0 deletions'", returnStdout: true).trim()
+                    echo "Git Diff détecté : ${gitDiff}"
+                    
+                    env.INSERTIONS = sh(script: "echo '${gitDiff}' | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo '0'", returnStdout: true).trim()
+                    env.DELETIONS  = sh(script: "echo '${gitDiff}' | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo '0'", returnStdout: true).trim()
+                    
+                    echo "📊 Collecte des ressources système de l'agent..."
+                    env.CPU = sh(script: """
+                        sar 1 3 | tail -1 | awk '{print 100 - \$NF}' 2>/dev/null || \
+                        top -bn3 -d1 | grep 'Cpu(s)' | awk '{sum+=\$8} END {print 100 - (sum/3)}' 2>/dev/null || \
+                        echo '10'
+                    """, returnStdout: true).trim()
+                    
+                    env.RAM = sh(script: """
+                        free | grep Mem | awk '{print \$3/\$2 * 100.0}' 2>/dev/null || echo '15'
+                    """, returnStdout: true).trim()
+                    
+                    env.DISK = sh(script: """
+                        df / | tail -1 | awk '{print \$5}' | sed 's/%//' 2>/dev/null || echo '20'
+                    """, returnStdout: true).trim()
  
                     sh "docker compose down -v || true"
                     sh "./mvnw -B clean"
@@ -35,17 +53,17 @@ pipeline {
         stage('🧪 2a. Tests Unitaires') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    sh "./mvnw test -Dtest='*Tests,!*IntegrationTests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
+                    sh "./mvnw test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                 }
                 script {
                     env.F_UNIT = sh(script: """
                         grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
                     """, returnStdout: true).trim()
- 
+                    
                     env.S_UNIT = sh(script: """
                         grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
                     """, returnStdout: true).trim()
                 }
             }
@@ -54,32 +72,26 @@ pipeline {
         stage('🧪 2b. Tests d\'Intégration') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    // MySqlIntegrationTests exclu temporairement : Testcontainers ne
-                    // parvient pas à joindre le port publié du conteneur MySQL éphémère
-                    // depuis cet agent Jenkins (Connection refused sur 172.17.0.1:<port>,
-                    // alors que le conteneur MySQL démarre correctement d'après ses logs).
-                    // C'est un problème de réseau Docker (agent Jenkins / conteneurs
-                    // éphémères Testcontainers pas sur le même réseau joignable),
-                    // pas un bug de test. À réactiver une fois la connectivité vérifiée
-                    // avec : docker network inspect bridge / ip addr show docker0
-                    // sur l'agent, ou après configuration de TESTCONTAINERS_HOST_OVERRIDE.
+                    // Timeout augmenté à 5min + forçage du réseau hôte pour Testcontainers
                     sh """
                         ./mvnw test \
-                        -Dtest='*IntegrationTests,!PostgresIntegrationTests,!MySqlIntegrationTests' \
+                        -Dtest='*IntegrationTests,!PostgresIntegrationTests' \
                         -Dspring.profiles.active=mysql \
                         -DfailIfNoTests=false \
-                        -Dmaven.test.failure.ignore=true
+                        -Dmaven.test.failure.ignore=true \
+                        -Dtestcontainers.container.startup.timeout=300 \
+                        -Dtestcontainers.use.host.network=true
                     """
                 }
                 script {
                     env.F_IT = sh(script: """
                         grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
                     """, returnStdout: true).trim()
- 
+                    
                     env.S_IT = sh(script: """
                         grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*IntegrationTests.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}'
+                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
                     """, returnStdout: true).trim()
                 }
             }
@@ -92,7 +104,7 @@ pipeline {
                 }
                 script {
                     def trivyCmd = "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --format json --quiet ${IMAGE_NAME}"
-                    env.V_OS = sh(script: "${trivyCmd} 2>/dev/null | grep -o '\"VulnerabilityID\"' | wc -l", returnStdout: true).trim()
+                    env.V_OS = sh(script: "${trivyCmd} 2>/dev/null | grep -o '\"VulnerabilityID\"' | wc -l || echo '0'", returnStdout: true).trim()
                 }
             }
         }
@@ -106,16 +118,17 @@ pipeline {
                         def httpCode = '000'
                         for (int i = 0; i < 10; i++) {
                             httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ || echo 000", returnStdout: true).trim()
-                            if (httpCode == '200' || httpCode == '302' || httpCode == '403') {
-                                echo "🎯 Smoke test : l'app répond (HTTP ${httpCode})"
-                                break
+                            
+                            if (httpCode == '200' || httpCode == '302' || httpCode == '403') { 
+                                echo "🎯 Smoke Test réussi ! L'application répond avec le code : ${httpCode}"
+                                break 
                             }
                             sleep 3
                         }
                         env.H_CODE = httpCode
  
                         if (httpCode == '000') {
-                            echo "⚠️ Aucune réponse. Logs de l'app :"
+                            echo "⚠️ L'application n'a pas répondu à temps. Extraction des logs :"
                             sh "docker compose logs petclinic-app --tail 50 || true"
                         }
  
@@ -129,34 +142,69 @@ pipeline {
     post {
         always {
             script {
+                // 1. Enregistrement des rapports de tests pour l'interface Jenkins
                 junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
  
+                // 2. Calcul des violations Checkstyle
                 sh "./mvnw checkstyle:check || true"
-                def smells = '0'
+                def smells = 0
                 if (fileExists('target/checkstyle-result.xml')) {
-                    smells = sh(script: "grep -c '<error' target/checkstyle-result.xml 2>/dev/null || echo 0", returnStdout: true).trim()
+                    def smellsRaw = sh(script: "grep -c '<error' target/checkstyle-result.xml 2>/dev/null || echo 0", returnStdout: true).trim()
+                    smells = smellsRaw.toInteger()
                 }
  
-                def total_t = (System.currentTimeMillis() - env.START_P.toLong()) / 1000
-                def status  = currentBuild.currentResult ?: 'UNKNOWN'
+                // 3. Typage des variables de compteurs
+                def failUnit = (env.F_UNIT ?: '0').toInteger()
+                def failIt    = (env.F_IT   ?: '0').toInteger()
+                def httpCode  = env.H_CODE ?: '000'
+                
+                // --- ALGORITHME D'ÉQUILIBRAGE DU STATUT (DATASET & JENKINS) ---
+                def finalStatus = 'SUCCESS'
+                
+                if (httpCode == '000' || httpCode == '500') {
+                    // Échec critique : L'application ne démarre pas (Smoke Test KO)
+                    finalStatus = 'FAILURE'
+                } else if (failUnit > 5 || failIt > 5) {
+                    // Échec critique : Trop grand nombre de régressions ou de crashs d'intégration
+                    finalStatus = 'FAILURE'
+                } else if (failUnit > 0 || failIt > 0 || smells > 200) {
+                    // Instable : Quelques échecs de tests ou dette technique trop lourde
+                    finalStatus = 'UNSTABLE'
+                } else {
+                    // Tout est OK !
+                    finalStatus = 'SUCCESS'
+                }
  
+                // Alignement de l'interface Jenkins avec notre statut métier calculé
+                if (finalStatus == 'FAILURE') {
+                    currentBuild.result = 'FAILURE'
+                } else if (finalStatus == 'UNSTABLE') {
+                    currentBuild.result = 'UNSTABLE'
+                } else {
+                    currentBuild.result = 'SUCCESS'
+                }
+ 
+                // 4. Structuration de la ligne de données enrichie
+                def total_t = (System.currentTimeMillis() - env.START_P.toLong()) / 1000
                 def row = [
                     env.BUILD_ID,
                     total_t,
-                    env.CPU  ?: '0',
-                    env.RAM  ?: '0',
-                    env.DISK ?: '0',
-                    env.F_UNIT ?: '0',
-                    env.S_UNIT ?: '0',
-                    env.F_IT   ?: '0',
-                    env.S_IT   ?: '0',
+                    env.CPU        ?: '0',
+                    env.RAM        ?: '0',
+                    env.DISK       ?: '0',
+                    env.INSERTIONS ?: '0', // NOUVEAU : lignes ajoutées
+                    env.DELETIONS  ?: '0', // NOUVEAU : lignes supprimées
+                    failUnit,
+                    env.S_UNIT     ?: '0',
+                    failIt,
+                    env.S_IT       ?: '0',
                     smells,
-                    env.V_OS  ?: '0',
-                    env.H_CODE ?: '000',
-                    status
+                    env.V_OS       ?: '0',
+                    httpCode,
+                    finalStatus
                 ].join(',')
  
-                def header = 'build_id,duration_s,cpu_pct,ram_pct,disk_pct,fail_unit,skip_unit,fail_it,skip_it,checkstyle_smells,vuln_high,http_code,build_status'
+                def header = 'build_id,duration_s,cpu_pct,ram_pct,disk_pct,lines_added,lines_deleted,fail_unit,skip_unit,fail_it,skip_it,checkstyle_smells,vuln_high,http_code,build_status'
  
                 if (!fileExists(env.DATASET_CSV)) {
                     writeFile file: env.DATASET_CSV, text: header + '\n'
@@ -169,7 +217,7 @@ pipeline {
                     sh "chmod +x collect_metrics.sh && ./collect_metrics.sh ${row} || true"
                 }
  
-                echo "✅ Run enregistré. Statut : ${status}. Entrée : ${row}"
+                echo "✅ Run enregistré avec succès. Statut : ${finalStatus}. Métriques : ${row}"
             }
         }
         cleanup {
