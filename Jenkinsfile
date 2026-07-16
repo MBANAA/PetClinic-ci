@@ -1,22 +1,31 @@
 pipeline {
     agent any
- 	 
-
-triggers {
-        cron('H * * * *') 
+ 
+    triggers {
+        cron('H * * * *')
     }
-
-
+ 
     environment {
         IMAGE_NAME  = 'petclinic-app'
         DATASET_CSV = 'metrics_dataset.csv'
-        
-        // --- CORRECTIFS RÉSEAU & TESTCONTAINERS ULTRA-ROBUSTES ---
+ 
+        // --- CORRECTIFS RÉSEAU & TESTCONTAINERS ---
         TESTCONTAINERS_RYUK_DISABLED = 'true'
         DOCKER_HOST = 'unix:///var/run/docker.sock'
         TESTCONTAINERS_HOST_IP = '127.0.0.1'
-        // Permet d'indiquer à Testcontainers de réutiliser les conteneurs si nécessaire
         TESTCONTAINERS_REUSE_ENABLE = 'true'
+ 
+        // --- CACHE MAVEN PERSISTANT (hors workspace pour survivre entre builds) ---
+        // Adaptez ce chemin à votre agent (doit être accessible en écriture et persister).
+        MAVEN_OPTS = '-Dmaven.repo.local=/var/jenkins_cache/.m2/repository'
+    }
+ 
+    options {
+        // Évite de garder des dizaines de vieux builds/artefacts qui ralentissent le SCM checkout
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        // Empêche deux runs concurrents de se marcher dessus sur docker compose
+        disableConcurrentBuilds()
+        timestamps()
     }
  
     stages {
@@ -24,31 +33,23 @@ triggers {
             steps {
                 script {
                     env.START_P = System.currentTimeMillis().toString()
-                    
-                    echo "📊 Collecte des métriques Git du commit..."
+ 
                     def gitDiff = sh(script: "git diff --shortstat HEAD~1 HEAD 2>/dev/null || echo '0 files changed, 0 insertions, 0 deletions'", returnStdout: true).trim()
-                    echo "Git Diff détecté : ${gitDiff}"
-                    
+ 
                     env.INSERTIONS = sh(script: "echo '${gitDiff}' | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo '0'", returnStdout: true).trim()
                     env.DELETIONS  = sh(script: "echo '${gitDiff}' | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo '0'", returnStdout: true).trim()
-                    
-                    echo "📊 Collecte des ressources système de l'agent..."
-                    env.CPU = sh(script: """
-                        sar 1 3 | tail -1 | awk '{print 100 - \$NF}' 2>/dev/null || \
-                        top -bn3 -d1 | grep 'Cpu(s)' | awk '{sum+=\$8} END {print 100 - (sum/3)}' 2>/dev/null || \
-                        echo '10'
-                    """, returnStdout: true).trim()
-                    
-                    env.RAM = sh(script: """
-                        free | grep Mem | awk '{print \$3/\$2 * 100.0}' 2>/dev/null || echo '15'
-                    """, returnStdout: true).trim()
-                    
-                    env.DISK = sh(script: """
-                        df / | tail -1 | awk '{print \$5}' | sed 's/%//' 2>/dev/null || echo '20'
-                    """, returnStdout: true).trim()
+ 
+                    // Collecte CPU/RAM/DISK en une seule passe légère (évite sar 3s + top 3s = 6s perdues)
+                    env.CPU  = sh(script: "top -bn1 | grep 'Cpu(s)' | awk '{print 100 - \$8}' 2>/dev/null || echo '10'", returnStdout: true).trim()
+                    env.RAM  = sh(script: "free | grep Mem | awk '{print \$3/\$2 * 100.0}' 2>/dev/null || echo '15'", returnStdout: true).trim()
+                    env.DISK = sh(script: "df / | tail -1 | awk '{print \$5}' | sed 's/%//' 2>/dev/null || echo '20'", returnStdout: true).trim()
  
                     sh "docker compose down -v || true"
-                    sh "./mvnw -B clean"
+ 
+                    // -o : mode offline dès que le cache .m2 persistant est chaud -> évite de retélécharger
+                    // toutes les dépendances (c'était ~110s rien que pour compiler dans les logs).
+                    // -T 1C : build multi-thread (utile si le pom a plusieurs modules ou plugins).
+                    sh "./mvnw -B -T 1C clean -o || ./mvnw -B -T 1C clean"
  
                     if (fileExists('scripts/chaos_engine.sh')) {
                         sh "chmod +x scripts/chaos_engine.sh && ./scripts/chaos_engine.sh || true"
@@ -57,88 +58,97 @@ triggers {
             }
         }
  
-        stage('🧪 2a. Tests Unitaires') {
-            steps {
-                catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    sh "./mvnw test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
+        // Les tests, le build Docker et le scan de sécurité ne dépendent pas les uns des autres
+        // (le build de l'image ne dépend pas du résultat des tests dans ce pipeline) : on les parallélise.
+        stage('🧪🛡️ 2. Tests & Sécurité (parallèle)') {
+            parallel {
+                stage('Tests Unitaires') {
+                    steps {
+                        catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                            sh "./mvnw -B -o test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
+                        }
+                        script {
+                            env.F_UNIT = sh(script: """
+                                grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
+                                | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
+                            """, returnStdout: true).trim()
+ 
+                            env.S_UNIT = sh(script: """
+                                grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
+                                | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
+                            """, returnStdout: true).trim()
+                        }
+                    }
                 }
-                script {
-                    env.F_UNIT = sh(script: """
-                        grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
-                    """, returnStdout: true).trim()
-                    
-                    env.S_UNIT = sh(script: """
-                        grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
-                    """, returnStdout: true).trim()
+ 
+                stage('Tests Intégration') {
+                    steps {
+                        catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                            sh """
+                                ./mvnw -B -o test \
+                                -Dtest='*IntegrationTests,!PostgresIntegrationTests' \
+                                -Dspring.profiles.active=mysql \
+                                -DfailIfNoTests=false \
+                                -Dmaven.test.failure.ignore=true \
+                                -Dtestcontainers.container.startup.timeout=180 \
+                                -Dtestcontainers.use.host.network=true
+                            """
+                        }
+                        script {
+                            env.F_IT = sh(script: """
+                                grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*IntegrationTests.xml target/surefire-reports/*MySql*.xml 2>/dev/null \
+                                | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
+                            """, returnStdout: true).trim()
+ 
+                            env.S_IT = sh(script: """
+                                grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*IntegrationTests.xml target/surefire-reports/*MySql*.xml 2>/dev/null \
+                                | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
+                            """, returnStdout: true).trim()
+                        }
+                    }
+                }
+ 
+                stage('Build Image + Trivy') {
+                    steps {
+                        catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                            // BuildKit + cache pour réutiliser les layers d'un run à l'autre
+                            sh "DOCKER_BUILDKIT=1 docker build --cache-from ${IMAGE_NAME}:latest -t ${IMAGE_NAME} -t ${IMAGE_NAME}:latest ."
+                        }
+                        script {
+                            // Volume de cache pour la base de vulnérabilités Trivy : évite de la
+                            // retélécharger à chaque run (souvent le plus gros poste de temps de ce stage).
+                            def trivyCmd = "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ aquasec/trivy:latest image --severity HIGH,CRITICAL --format json --quiet ${IMAGE_NAME}"
+                            env.V_OS = sh(script: "${trivyCmd} 2>/dev/null | grep -o '\"VulnerabilityID\"' | wc -l || echo '0'", returnStdout: true).trim()
+                        }
+                    }
                 }
             }
         }
  
-        stage('🧪 2b. Tests d\'Intégration') {
-            steps {
-                catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    // Ajout des options de tolérance réseau pour Testcontainers
-                    sh """
-                        ./mvnw test \
-                        -Dtest='*IntegrationTests,!PostgresIntegrationTests' \
-                        -Dspring.profiles.active=mysql \
-                        -DfailIfNoTests=false \
-                        -Dmaven.test.failure.ignore=true \
-                        -Dtestcontainers.container.startup.timeout=240 \
-                        -Dtestcontainers.use.host.network=true
-                    """
-                }
-                script {
-                    // Utilisation d'un joker générique plus robuste pour éviter le plantage du script de parsing
-                    env.F_IT = sh(script: """
-                        grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*IntegrationTests.xml target/surefire-reports/*MySql*.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
-                    """, returnStdout: true).trim()
-                    
-                    env.S_IT = sh(script: """
-                        grep -ohE 'skipped="[0-9]+"' target/surefire-reports/*IntegrationTests.xml target/surefire-reports/*MySql*.xml 2>/dev/null \
-                        | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
-                    """, returnStdout: true).trim()
-                }
-            }
-        }
- 
-        stage('🛡️ 3. Sécurité (Trivy)') {
-            steps {
-                catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    sh "docker build -t ${IMAGE_NAME} ."
-                }
-                script {
-                    def trivyCmd = "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --format json --quiet ${IMAGE_NAME}"
-                    env.V_OS = sh(script: "${trivyCmd} 2>/dev/null | grep -o '\"VulnerabilityID\"' | wc -l || echo '0'", returnStdout: true).trim()
-                }
-            }
-        }
- 
-        stage('🚀 4. Smoke Test') {
+        stage('🚀 3. Smoke Test') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
                     script {
-                        sh "docker compose up -d --wait petclinic-mysql petclinic-app"
+                        // docker compose --wait attend déjà que le healthcheck passe : plus besoin
+                        // d'une boucle de 15 essais x 3s (45s max). On garde un filet de sécurité court.
+                        sh "docker compose up -d --wait --wait-timeout 60 petclinic-mysql petclinic-app"
  
-                        def httpCode = '000'
-                        for (int i = 0; i < 15; i++) { // Augmenté à 15 essais (45s max)
-                            httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ || echo 000", returnStdout: true).trim()
-                            
-                            // 403 est un code valide (l'application répond mais refuse l'accès sans auth)
-                            if (httpCode == '200' || httpCode == '302' || httpCode == '403') { 
-                                echo "🎯 Smoke Test réussi ! L'application répond avec le code : ${httpCode}"
-                                break 
+                        def httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ || echo 000", returnStdout: true).trim()
+ 
+                        if (!(httpCode in ['200', '302', '403'])) {
+                            for (int i = 0; i < 3; i++) {
+                                sleep 3
+                                httpCode = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ || echo 000", returnStdout: true).trim()
+                                if (httpCode in ['200', '302', '403']) { break }
                             }
-                            sleep 3
                         }
                         env.H_CODE = httpCode
  
                         if (httpCode == '000') {
                             echo "⚠️ L'application n'a pas répondu à temps. Extraction des logs :"
                             sh "docker compose logs petclinic-app --tail 50 || true"
+                        } else {
+                            echo "🎯 Smoke Test réussi ! Code HTTP : ${httpCode}"
                         }
  
                         sh "docker compose down -v || true"
@@ -151,28 +161,23 @@ triggers {
     post {
         always {
             script {
-                // 1. Enregistrement des rapports de tests pour l'interface Jenkins
                 junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
  
-                // 2. Calcul des violations Checkstyle (FailOnViolation désactivé pour ne pas casser le script)
-                sh "./mvnw checkstyle:check -Dcheckstyle.failOnViolation=false || true"
+                // Réutilise le -o (offline) pour ne pas retélécharger le plugin checkstyle
+                sh "./mvnw -B -o checkstyle:check -Dcheckstyle.failOnViolation=false || true"
                 def smells = 0
                 if (fileExists('target/checkstyle-result.xml')) {
                     def smellsRaw = sh(script: "grep -c '<error' target/checkstyle-result.xml 2>/dev/null || echo 0", returnStdout: true).trim()
                     smells = smellsRaw.toInteger()
                 }
  
-                // 3. Typage des variables de compteurs
                 def failUnit = (env.F_UNIT ?: '0').toInteger()
                 def failIt    = (env.F_IT   ?: '0').toInteger()
                 def httpCode  = env.H_CODE ?: '000'
-                
-                // --- ALGORITHME D'ÉQUILIBRAGE DU STATUT (DATASET & JENKINS) ---
+ 
                 def finalStatus = 'SUCCESS'
-                
-                // Un code 403 / 302 / 200 indique que l'application est en vie
                 def appIsUp = (httpCode == '200' || httpCode == '302' || httpCode == '403')
-                
+ 
                 if (!appIsUp) {
                     finalStatus = 'FAILURE'
                 } else if (failUnit > 5 || failIt > 5) {
@@ -183,16 +188,8 @@ triggers {
                     finalStatus = 'SUCCESS'
                 }
  
-                // Alignement de l'interface Jenkins avec notre statut métier calculé
-                if (finalStatus == 'FAILURE') {
-                    currentBuild.result = 'FAILURE'
-                } else if (finalStatus == 'UNSTABLE') {
-                    currentBuild.result = 'UNSTABLE'
-                } else {
-                    currentBuild.result = 'SUCCESS'
-                }
+                currentBuild.result = finalStatus
  
-                // 4. Structuration de la ligne de données
                 def total_t = (System.currentTimeMillis() - env.START_P.toLong()) / 1000
                 def row = [
                     env.BUILD_ID,
@@ -230,7 +227,9 @@ triggers {
         }
         cleanup {
             sh "docker compose down -v || true"
-            sh "docker system prune -f --filter 'until=1h' || true"
+            // until=6h au lieu de 1h : on garde le cache de build Docker plus longtemps
+            // pour que --cache-from serve vraiment au run suivant.
+            sh "docker system prune -f --filter 'until=6h' || true"
         }
     }
 }
