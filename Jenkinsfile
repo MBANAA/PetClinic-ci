@@ -46,10 +46,12 @@ pipeline {
  
                     sh "docker compose down -v || true"
  
-                    // -o : mode offline dès que le cache .m2 persistant est chaud -> évite de retélécharger
-                    // toutes les dépendances (c'était ~110s rien que pour compiler dans les logs).
+                    // Pas de -o (offline) : avec un .m2 persistant (MAVEN_OPTS ci-dessus), Maven ne
+                    // retélécharge déjà pas ce qui est en cache local, donc -o n'apporte rien de plus
+                    // et casse le build tant que tous les plugins (checkstyle, javaformat...) n'ont
+                    // pas encore été mis en cache au moins une fois.
                     // -T 1C : build multi-thread (utile si le pom a plusieurs modules ou plugins).
-                    sh "./mvnw -B -T 1C clean -o || ./mvnw -B -T 1C clean"
+                    sh "./mvnw -B -T 1C clean"
  
                     if (fileExists('scripts/chaos_engine.sh')) {
                         sh "chmod +x scripts/chaos_engine.sh && ./scripts/chaos_engine.sh || true"
@@ -65,7 +67,7 @@ pipeline {
                 stage('Tests Unitaires') {
                     steps {
                         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                            sh "./mvnw -B -o test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
+                            sh "./mvnw -B test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                         }
                         script {
                             env.F_UNIT = sh(script: """
@@ -85,7 +87,7 @@ pipeline {
                     steps {
                         catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
                             sh """
-                                ./mvnw -B -o test \
+                                ./mvnw -B test \
                                 -Dtest='*IntegrationTests,!PostgresIntegrationTests' \
                                 -Dspring.profiles.active=mysql \
                                 -DfailIfNoTests=false \
@@ -163,8 +165,9 @@ pipeline {
             script {
                 junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
  
-                // Réutilise le -o (offline) pour ne pas retélécharger le plugin checkstyle
-                sh "./mvnw -B -o checkstyle:check -Dcheckstyle.failOnViolation=false || true"
+                // Le cache .m2 persistant (MAVEN_OPTS) évite déjà de retélécharger le plugin checkstyle
+                // d'un run à l'autre, sans besoin de forcer le mode offline.
+                sh "./mvnw -B checkstyle:check -Dcheckstyle.failOnViolation=false || true"
                 def smells = 0
                 if (fileExists('target/checkstyle-result.xml')) {
                     def smellsRaw = sh(script: "grep -c '<error' target/checkstyle-result.xml 2>/dev/null || echo 0", returnStdout: true).trim()
