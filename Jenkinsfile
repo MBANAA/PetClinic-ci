@@ -18,7 +18,6 @@ pipeline {
                     env.START_P = System.currentTimeMillis().toString()
                     
                     echo "📊 Collecte des métriques Git du commit..."
-                    // Extraction du nombre de lignes ajoutées et supprimées dans le commit actuel
                     def gitDiff = sh(script: "git diff --shortstat HEAD~1 HEAD 2>/dev/null || echo '0 files changed, 0 insertions, 0 deletions'", returnStdout: true).trim()
                     echo "Git Diff détecté : ${gitDiff}"
                     
@@ -72,7 +71,6 @@ pipeline {
         stage('🧪 2b. Tests d\'Intégration') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    // Timeout augmenté à 5min + forçage du réseau hôte pour Testcontainers
                     sh """
                         ./mvnw test \
                         -Dtest='*IntegrationTests,!PostgresIntegrationTests' \
@@ -145,8 +143,8 @@ pipeline {
                 // 1. Enregistrement des rapports de tests pour l'interface Jenkins
                 junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
  
-                // 2. Calcul des violations Checkstyle
-                sh "./mvnw checkstyle:check || true"
+                // 2. Calcul des violations Checkstyle (Sécurisé pour ne pas bloquer le run)
+                sh "./mvnw checkstyle:check -Dcheckstyle.failOnViolation=false || true"
                 def smells = 0
                 if (fileExists('target/checkstyle-result.xml')) {
                     def smellsRaw = sh(script: "grep -c '<error' target/checkstyle-result.xml 2>/dev/null || echo 0", returnStdout: true).trim()
@@ -162,20 +160,16 @@ pipeline {
                 def finalStatus = 'SUCCESS'
                 
                 if (httpCode == '000' || httpCode == '500') {
-                    // Échec critique : L'application ne démarre pas (Smoke Test KO)
                     finalStatus = 'FAILURE'
                 } else if (failUnit > 5 || failIt > 5) {
-                    // Échec critique : Trop grand nombre de régressions ou de crashs d'intégration
                     finalStatus = 'FAILURE'
                 } else if (failUnit > 0 || failIt > 0 || smells > 200) {
-                    // Instable : Quelques échecs de tests ou dette technique trop lourde
                     finalStatus = 'UNSTABLE'
                 } else {
-                    // Tout est OK !
                     finalStatus = 'SUCCESS'
                 }
  
-                // Alignement de l'interface Jenkins avec notre statut métier calculé
+                // Alignement du statut du build dans Jenkins
                 if (finalStatus == 'FAILURE') {
                     currentBuild.result = 'FAILURE'
                 } else if (finalStatus == 'UNSTABLE') {
@@ -184,7 +178,7 @@ pipeline {
                     currentBuild.result = 'SUCCESS'
                 }
  
-                // 4. Structuration de la ligne de données enrichie
+                // 4. Structuration et écriture dans le CSV
                 def total_t = (System.currentTimeMillis() - env.START_P.toLong()) / 1000
                 def row = [
                     env.BUILD_ID,
@@ -192,8 +186,8 @@ pipeline {
                     env.CPU        ?: '0',
                     env.RAM        ?: '0',
                     env.DISK       ?: '0',
-                    env.INSERTIONS ?: '0', // NOUVEAU : lignes ajoutées
-                    env.DELETIONS  ?: '0', // NOUVEAU : lignes supprimées
+                    env.INSERTIONS ?: '0',
+                    env.DELETIONS  ?: '0',
                     failUnit,
                     env.S_UNIT     ?: '0',
                     failIt,
