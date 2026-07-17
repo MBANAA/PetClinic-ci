@@ -16,6 +16,7 @@
 
 package org.springframework.samples.petclinic;
 
+import java.time.Duration;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
@@ -35,8 +36,9 @@ public class MysqlTestApplication {
 	@ServiceConnection
 	@Profile("mysql")
 	@Bean
-	static MySQLContainer container() {
-		return new MySQLContainer(DockerImageName.parse("mysql:9.5"));
+	static MySQLContainer<?> container() {
+		return new MySQLContainer<>(DockerImageName.parse("mysql:8.4"))
+				.withStartupTimeout(Duration.ofMinutes(3));
 	}
 
 	public static void main(String[] args) {

@@ -18,6 +18,7 @@ package org.springframework.samples.petclinic;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledInNativeImage;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,7 +48,8 @@ class MySqlIntegrationTests {
 
 	@ServiceConnection
 	@Container
-	static MySQLContainer container = new MySQLContainer(DockerImageName.parse("mysql:8.4"));
+	static MySQLContainer<?> container = new MySQLContainer<>(DockerImageName.parse("mysql:8.4"))
+			.withStartupTimeout(Duration.ofMinutes(3));
 
 	@LocalServerPort
 	int port;
