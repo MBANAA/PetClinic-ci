@@ -49,7 +49,7 @@ class MySqlIntegrationTests {
 	@ServiceConnection
 	@Container
 	static MySQLContainer<?> container = new MySQLContainer<>(DockerImageName.parse("mysql:8.4"))
-			.withStartupTimeout(Duration.ofMinutes(3));
+		.withStartupTimeout(Duration.ofMinutes(3));
 
 	@LocalServerPort
 	int port;
