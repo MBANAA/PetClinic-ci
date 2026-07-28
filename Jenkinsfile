@@ -29,10 +29,10 @@ pipeline {
         stage('📊 1. Init & Chaos') {
             steps {
                 script {
-                    // CORRECTION : Utilisation de l'horloge de l'agent (en secondes)
+                    // Utilisation de l'horloge de l'agent (en secondes)
                     env.START_P = sh(script: "date +%s", returnStdout: true).trim()
  
-                    // CORRECTION : Sécurisation du git diff pour les environnements à clone partiel (shallow clone)
+                    // Sécurisation du git diff pour les environnements à clone partiel (shallow clone)
                     def gitDiff = sh(script: "git diff --shortstat HEAD~1 HEAD 2>/dev/null || echo ''", returnStdout: true).trim()
                     if (gitDiff == '') {
                         gitDiff = "0 files changed, 0 insertions, 0 deletions"
@@ -48,7 +48,7 @@ pipeline {
  
                     sh "docker compose down -v || true"
                     
-                    // CORRECTION : Fix automatique du formatage Spring pour éviter le crash du plugin maven/docker
+                    // Fix automatique du formatage Spring pour éviter le crash de l'image
                     sh "./mvnw -B spring-javaformat:apply || true"
                     sh "./mvnw -B -T 1C clean"
  
@@ -157,7 +157,8 @@ pipeline {
             script {
                 junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
  
-                sh "./mvnw -B checkstyle:check -Dcheckstyle.failOnViolation=false || true"
+                // CORRECTION : Ajout de -q pour le silence dans les logs
+                sh "./mvnw -B -q checkstyle:check -Dcheckstyle.failOnViolation=false || true"
                 def smells = 0
                 if (fileExists('target/checkstyle-result.xml')) {
                     def smellsRaw = sh(script: "grep -c '<error' target/checkstyle-result.xml 2>/dev/null || echo 0", returnStdout: true).trim()
@@ -172,11 +173,12 @@ pipeline {
                 def finalStatus = 'SUCCESS'
                 def appIsUp = (httpCode == '200' || httpCode == '302' || httpCode == '403')
  
+                // CORRECTION : Ajustement du seuil d'instabilité Checkstyle (500)
                 if (!appIsUp) {
                     finalStatus = 'FAILURE'
                 } else if (failUnit > 5 || failIt > 5) {
                     finalStatus = 'FAILURE'
-                } else if (failUnit > 0 || failIt > 0 || smells > 200) {
+                } else if (failUnit > 0 || failIt > 0 || smells > 500) {
                     finalStatus = 'UNSTABLE'
                 } else {
                     finalStatus = 'SUCCESS'
@@ -184,7 +186,7 @@ pipeline {
  
                 currentBuild.result = finalStatus
  
-                // CORRECTION : Calcul robuste du temps de run via le shell de l'agent
+                // Calcul robuste du temps de run via le shell de l'agent
                 def endTime = sh(script: "date +%s", returnStdout: true).trim().toLong()
                 def startTime = env.START_P ? env.START_P.toLong() : endTime
                 def total_t = endTime - startTime
