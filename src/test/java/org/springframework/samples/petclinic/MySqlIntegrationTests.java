@@ -48,9 +48,7 @@ class MySqlIntegrationTests {
 
 	@ServiceConnection
 	@Container
-	MySQLContainer container = new MySQLContainer("mysql:8.0")
-		.withStartupTimeout(Duration.ofMinutes(3));
-	
+	static MySQLContainer container = new MySQLContainer("mysql:8.0").withStartupTimeout(Duration.ofMinutes(3));
 
 	@LocalServerPort
 	int port;

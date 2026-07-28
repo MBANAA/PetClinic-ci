@@ -36,8 +36,8 @@ public class MysqlTestApplication {
 	@ServiceConnection
 	@Profile("mysql")
 	@Bean
-	static MySQLContainer<?> container() {
-		return new MySQLContainer<>(DockerImageName.parse("mysql:8.4")).withStartupTimeout(Duration.ofMinutes(3));
+	static MySQLContainer container() {
+		return new MySQLContainer(DockerImageName.parse("mysql:8.4")).withStartupTimeout(Duration.ofMinutes(3));
 	}
 
 	public static void main(String[] args) {
