@@ -29,9 +29,14 @@ pipeline {
         stage('📊 1. Init & Chaos') {
             steps {
                 script {
-                    env.START_P = System.currentTimeMillis().toString()
+                    // CORRECTION : Utilisation de l'horloge de l'agent (en secondes)
+                    env.START_P = sh(script: "date +%s", returnStdout: true).trim()
  
-                    def gitDiff = sh(script: "git diff --shortstat HEAD~1 HEAD 2>/dev/null || echo '0 files changed, 0 insertions, 0 deletions'", returnStdout: true).trim()
+                    // CORRECTION : Sécurisation du git diff pour les environnements à clone partiel (shallow clone)
+                    def gitDiff = sh(script: "git diff --shortstat HEAD~1 HEAD 2>/dev/null || echo ''", returnStdout: true).trim()
+                    if (gitDiff == '') {
+                        gitDiff = "0 files changed, 0 insertions, 0 deletions"
+                    }
  
                     env.INSERTIONS = sh(script: "echo '${gitDiff}' | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo '0'", returnStdout: true).trim()
                     env.DELETIONS  = sh(script: "echo '${gitDiff}' | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo '0'", returnStdout: true).trim()
@@ -42,6 +47,9 @@ pipeline {
                     env.DISK = sh(script: "df / | tail -1 | awk '{print \$5}' | sed 's/%//' 2>/dev/null || echo '20'", returnStdout: true).trim()
  
                     sh "docker compose down -v || true"
+                    
+                    // CORRECTION : Fix automatique du formatage Spring pour éviter le crash du plugin maven/docker
+                    sh "./mvnw -B spring-javaformat:apply || true"
                     sh "./mvnw -B -T 1C clean"
  
                     if (fileExists('scripts/chaos_engine.sh')) {
@@ -59,7 +67,6 @@ pipeline {
                             sh "./mvnw -B test -Dtest='*Tests' -DfailIfNoTests=false -Dmaven.test.failure.ignore=true"
                         }
                         script {
-                            // Échappement correct du signe $ pour awk dans une double quote Jenkins
                             env.F_UNIT = sh(script: """
                                 grep -ohE 'failures="[0-9]+"|errors="[0-9]+"' target/surefire-reports/*.xml 2>/dev/null \
                                 | grep -o '[0-9]*' | awk '{s+=\$1} END {print s+0}' || echo '0'
@@ -157,7 +164,7 @@ pipeline {
                     smells = smellsRaw.toInteger()
                 }
  
-                // Utilisation systématique de valeurs par défaut pour éviter les null pointer exceptions
+                // Utilisation systématique de valeurs par défaut
                 def failUnit = (env.F_UNIT ?: '0').toInteger()
                 def failIt   = (env.F_IT   ?: '0').toInteger()
                 def httpCode  = env.H_CODE ?: '000'
@@ -177,9 +184,10 @@ pipeline {
  
                 currentBuild.result = finalStatus
  
-                // Calcul robuste du temps de run
-                def startTime = env.START_P ? env.START_P.toLong() : System.currentTimeMillis()
-                def total_t = (System.currentTimeMillis() - startTime) / 1000
+                // CORRECTION : Calcul robuste du temps de run via le shell de l'agent
+                def endTime = sh(script: "date +%s", returnStdout: true).trim().toLong()
+                def startTime = env.START_P ? env.START_P.toLong() : endTime
+                def total_t = endTime - startTime
                 
                 def row = [
                     env.BUILD_ID,
